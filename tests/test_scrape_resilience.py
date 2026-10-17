@@ -162,6 +162,26 @@ class TestPerBoardPersist(unittest.TestCase):
         self.assertEqual(totals.scraped, 2)
         self.assertEqual(totals.db_upserts, 2)
 
+    def test_hour_budget_stops_before_the_next_board(self):
+        totals = _TotalsAccumulator()
+        supabase = Mock()
+        settings = _settings(job_scraping_boards=["indeed", "linkedin"])
+        calls = []
+
+        def fake_scrape(self, board, **_kwargs):
+            calls.append(board)
+            return []
+
+        with patch("main.JobScraperSpider.scrape_board", fake_scrape):
+            ok = _process_single_role(
+                "Software Engineer", 1, 1, settings, supabase, totals,
+                deadline=time.monotonic() - 1,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [])
+        self.assertEqual(totals.scraped, 0)
+
     def test_persist_skips_empty_board(self):
         totals = _TotalsAccumulator()
         supabase = Mock()

@@ -9,7 +9,7 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -183,7 +183,22 @@ def _role_searches(role, settings):
     return searches
 
 
-def _process_single_role(role, index, total, settings, supabase, totals, batch_size=PERSIST_BATCH_SIZE):
+def _run_budget_deadline(settings):
+    """Monotonic deadline for this process, or None when the run is unlimited."""
+    budget = float(getattr(settings, "job_scraping_run_budget_seconds", 0) or 0)
+    if budget <= 0:
+        return None
+    return time.monotonic() + budget
+
+
+def _budget_reached(deadline) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _process_single_role(
+    role, index, total, settings, supabase, totals,
+    batch_size=PERSIST_BATCH_SIZE, deadline=None,
+):
     """
     Process one role board-by-board so a hang on LinkedIn cannot delay
     Rozee/Mustakbil/Indeed writes.
@@ -208,6 +223,9 @@ def _process_single_role(role, index, total, settings, supabase, totals, batch_s
     try:
         spider = JobScraperSpider()
         for board, location in searches:
+            if _budget_reached(deadline):
+                print(f"   Hour budget reached; leaving {role} before {board}.")
+                break
             print(f"   Board: {board} ({location})")
             try:
                 buffer = []
@@ -293,44 +311,69 @@ def run_bulk_pipeline():
     if callable(clearer):
         clearer()
 
+    deadline = _run_budget_deadline(settings)
+    budget = float(getattr(settings, "job_scraping_run_budget_seconds", 0) or 0)
+
     print("\n" + "=" * 78)
     print(
         f"RUNNING BULK PIPELINE FOR {len(roles)} ROLES "
         f"({max_workers} worker(s), "
         f"max {settings.job_scraping_max_concurrent_fetches} fetches/board)"
     )
+    if budget > 0:
+        print(f"Run budget: {budget:.0f}s (stop and sync when it is used)")
     print("=" * 78 + "\n")
 
     totals = _TotalsAccumulator()
 
-    # Main pass
+    def _submit(executor, futures, idx, role, role_total):
+        futures[executor.submit(
+            _process_single_role,
+            role, idx, role_total,
+            settings, supabase, totals, batch_size, deadline,
+        )] = role
+
+    # Main pass. Workers stay capped, and a budget stops new roles so the
+    # hourly job can exit and sync instead of running until GitHub kills it.
+    pending = list(enumerate(roles, 1))
     if max_workers > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _process_single_role,
-                    role, idx, len(roles),
-                    settings, supabase, totals, batch_size,
-                ): role
-                for idx, role in enumerate(roles, 1)
-            }
-            for future in as_completed(futures):
-                role = futures[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    print(f"   Unexpected worker error for '{role}': {exc}")
-                    totals.add_failed_role(role)
+            futures = {}
+            while pending or futures:
+                while pending and len(futures) < max_workers:
+                    if _budget_reached(deadline):
+                        print(
+                            f"Hour budget reached; {len(pending)} roles left "
+                            "for the next run."
+                        )
+                        pending.clear()
+                        break
+                    idx, role = pending.pop(0)
+                    _submit(executor, futures, idx, role, len(roles))
+                if not futures:
+                    break
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    role = futures.pop(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"   Unexpected worker error for '{role}': {exc}")
+                        totals.add_failed_role(role)
     else:
-        for idx, role in enumerate(roles, 1):
+        for idx, role in pending:
+            if _budget_reached(deadline):
+                print(f"Hour budget reached; stopping before role {idx}.")
+                break
             _process_single_role(
                 role, idx, len(roles),
-                settings, supabase, totals, batch_size,
+                settings, supabase, totals, batch_size, deadline,
             )
 
     # Retry after a cooldown so a burst of blocks is not immediately retried.
+    # Skip it once the hour is used up; the workflow starts a fresh pass.
     failed = totals.failed_roles[:]
-    if failed:
+    if failed and not _budget_reached(deadline):
         backoff = max(0.0, settings.job_scraping_retry_backoff_seconds)
         print("\n" + "=" * 78)
         print(
@@ -344,9 +387,12 @@ def run_bulk_pipeline():
         totals.failed_roles.clear()
 
         for idx, role in enumerate(failed, 1):
+            if _budget_reached(deadline):
+                print(f"Hour budget reached; not retrying {role}.")
+                break
             _process_single_role(
                 role, idx, len(failed),
-                settings, supabase, totals, batch_size,
+                settings, supabase, totals, batch_size, deadline,
             )
 
     # Summary
@@ -387,4 +433,9 @@ def _configure_stdio():
 if __name__ == "__main__":
     _configure_stdio()
     with _suppress_scrapling_logs():
-        run_bulk_pipeline()
+        result = run_bulk_pipeline()
+    # Exit 2 tells the hourly workflow this pass fetched nothing, so it
+    # starts the scraper again instead of waiting out a cancelled run.
+    if result["scraped"] <= 0:
+        print("No jobs fetched this run.")
+        sys.exit(2)

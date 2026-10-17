@@ -46,6 +46,9 @@ class Settings:
     job_scraping_max_detail_fetches: int
     job_scraping_indeed_interactive: bool
     job_scraping_indeed_interactive_wait_seconds: float
+    # 0 = run until the role list finishes. Scheduled CI sets a budget so the
+    # hour ends with a normal exit instead of a cancelled 6-hour job.
+    job_scraping_run_budget_seconds: float
 
 
 _settings: Settings | None = None
@@ -186,6 +189,10 @@ def _build_settings() -> Settings:
         job_scraping_indeed_interactive_wait_seconds=_get_env_float(
             "JOB_SCRAPING_INDEED_INTERACTIVE_WAIT_SECONDS",
             300.0,
+        ),
+        job_scraping_run_budget_seconds=_get_env_float(
+            "JOB_SCRAPING_RUN_BUDGET_SECONDS",
+            0.0,
         ),
     )
 

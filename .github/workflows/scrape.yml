@@ -2,14 +2,11 @@ name: Daily Job Scrape
 
 on:
   schedule:
-    - cron: "0 20 * * *" # 1am PKT — LinkedIn, Role Set 1
-    - cron: "0 23 * * *" # 4am PKT — Indeed, Role Set 1
-    - cron: "0 2 * * *" # 7am PKT — LinkedIn, Role Set 2
-    - cron: "0 5 * * *" # 10am PKT — Indeed, Role Set 2
-    - cron: "0 8 * * *" # 1pm PKT — LinkedIn, Role Set 1
-    - cron: "0 11 * * *" # 4pm PKT — Indeed, Role Set 1
-    - cron: "0 15 * * *" # 8pm PKT — LinkedIn, Role Set 2
-    - cron: "0 17 * * *" # 10pm PKT — Indeed, Role Set 2
+    # Every hour. A 6–8h run used to overlap the next slots; GitHub then
+    # cancelled the queued runs, so nothing synced for 12h+. Each hour is
+    # one board + one role set (see "Resolve board and role set"). If that
+    # pass fetches nothing, the scrape step starts the scraper again.
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       boards:
@@ -45,7 +42,9 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # Stay under the next hour so a run cannot sit queued and get cancelled.
+    # Manual runs can still use the full 6h when you pick a board yourself.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 55 }}
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -76,19 +75,9 @@ jobs:
       PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
       PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
       EXCEL_SKILL_GAP: data/skills_master.xlsx
-      JOB_SCRAPING_BOARDS: >-
-        ${{
-          github.event_name == 'workflow_dispatch' && github.event.inputs.boards ||
-          github.event.schedule == '0 20 * * *' && 'linkedin' ||
-          github.event.schedule == '0 23 * * *' && 'indeed' ||
-          github.event.schedule == '0 2 * * *' && 'linkedin' ||
-          github.event.schedule == '0 5 * * *' && 'indeed' ||
-          github.event.schedule == '0 8 * * *' && 'linkedin' ||
-          github.event.schedule == '0 11 * * *' && 'indeed' ||
-          github.event.schedule == '0 15 * * *' && 'linkedin' ||
-          github.event.schedule == '0 17 * * *' && 'indeed' ||
-          'indeed,linkedin'
-        }}
+      # Scheduled passes stop themselves after 22 minutes and sync. Two passes
+      # fit in the hour, so an empty hour can start again before the next cron.
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '0' || '1320' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -111,22 +100,24 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/ -q --tb=line
 
-      - name: Resolve role set
+      - name: Resolve board and role set
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "JOB_SCRAPING_BOARDS=${{ github.event.inputs.boards }}" >> "$GITHUB_ENV"
             ROLE_SET="${{ github.event.inputs.role_set }}"
-          elif [ "${{ github.event.schedule }}" = "0 20 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 23 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 8 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
-            ROLE_SET="1"
-          elif [ "${{ github.event.schedule }}" = "0 2 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 5 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 15 * * *" ] || \
-               [ "${{ github.event.schedule }}" = "0 17 * * *" ]; then
-            ROLE_SET="2"
           else
-            ROLE_SET="all"
+            # UTC hour % 4 cycles LinkedIn/Indeed and both role sets every hour.
+            # 0 LinkedIn set 1, 1 Indeed set 1, 2 LinkedIn set 2, 3 Indeed set 2.
+            HOUR=$(date -u +%H)
+            SLOT=$((10#$HOUR % 4))
+            case "$SLOT" in
+              0) BOARD=linkedin; ROLE_SET=1 ;;
+              1) BOARD=indeed; ROLE_SET=1 ;;
+              2) BOARD=linkedin; ROLE_SET=2 ;;
+              3) BOARD=indeed; ROLE_SET=2 ;;
+            esac
+            echo "JOB_SCRAPING_BOARDS=$BOARD" >> "$GITHUB_ENV"
+            echo "Hourly slot UTC ${HOUR}:00 -> ${BOARD}, role set ${ROLE_SET}"
           fi
 
           if [ "$ROLE_SET" = "1" ]; then
@@ -144,4 +135,19 @@ jobs:
           fi
 
       - name: Run scraper
-        run: uv run python -u main.py
+        run: |
+          set +e
+          uv run python -u main.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          # main.py exits 2 when this pass fetched no listings. Start again
+          # now instead of waiting for the next hour (or a cancelled queue).
+          if [ "$code" -eq 2 ]; then
+            echo "Nothing fetched this hour; starting the scraper again."
+            uv run python -u main.py
+            exit $?
+          fi
+          exit "$code"

@@ -136,21 +136,21 @@ Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_f
 
 ## Features
 
-| Feature                    | Description                                                                               |
-| :------------------------- | :---------------------------------------------------------------------------------------- |
+| Feature                    | Description                                                                                |
+| :------------------------- | :----------------------------------------------------------------------------------------- |
 | **Multi-board scraping**   | LinkedIn, Indeed, Rozee, Mustakbil; CI alternates LinkedIn and Indeed across two role sets |
-| **Anti-bot bypass**        | Scrapling `StealthyFetcher` with Cloudflare solver and headless/headful fallback          |
-| **Role allowlist**         | Only scrapes roles listed in `PERMITTED_ROLES` - rejects everything else                  |
-| **Supabase deduplication** | SHA-256 job IDs tracked in `processed_jobs`; stale IDs are cleared so listings can return |
-| **Description cleaning**   | HTML entity decoding, whitespace normalisation, section splitting, sentence deduplication |
-| **Skill extraction**       | Word-boundary regex matching against a configurable master Excel skill list               |
-| **Experience parsing**     | Detects level (entry/junior/mid/senior/lead) and min/max year ranges                      |
-| **Salary normalisation**   | Parses currency, amount range and period from free-text salary strings                    |
-| **Parallel workers**       | Role thread pool (default 4) with a per-board fetch cap (default 3)                       |
-| **Failed role retry**      | Failed roles wait for a cooldown, then retry once sequentially                            |
-| **Batched upsert**         | Supabase upsert in configurable batches with conflict resolution on `job_id`              |
-| **Enrichment confidence**  | Scores each job 0–1 based on how much structured data was extracted                       |
-| **Stale job cleanup**      | Deletes jobs older than a configurable number of days at the start of each run            |
+| **Anti-bot bypass**        | Scrapling `StealthyFetcher` with Cloudflare solver and headless/headful fallback           |
+| **Role allowlist**         | Only scrapes roles listed in `PERMITTED_ROLES` - rejects everything else                   |
+| **Supabase deduplication** | SHA-256 job IDs tracked in `processed_jobs`; stale IDs are cleared so listings can return  |
+| **Description cleaning**   | HTML entity decoding, whitespace normalisation, section splitting, sentence deduplication  |
+| **Skill extraction**       | Word-boundary regex matching against a configurable master Excel skill list                |
+| **Experience parsing**     | Detects level (entry/junior/mid/senior/lead) and min/max year ranges                       |
+| **Salary normalisation**   | Parses currency, amount range and period from free-text salary strings                     |
+| **Parallel workers**       | Role thread pool (default 4) with a per-board fetch cap (default 3)                        |
+| **Failed role retry**      | Failed roles wait for a cooldown, then retry once sequentially                             |
+| **Batched upsert**         | Supabase upsert in configurable batches with conflict resolution on `job_id`               |
+| **Enrichment confidence**  | Scores each job 0–1 based on how much structured data was extracted                        |
+| **Stale job cleanup**      | Deletes jobs older than a configurable number of days at the start of each run             |
 
 ---
 
@@ -205,18 +205,18 @@ uv run python main.py
 
 **Canonical CI repo (public):** [github.com/HammadAhsan341/job-scraper](https://github.com/HammadAhsan341/job-scraper) — scheduled scrapes and manual runs use this repository’s Actions workflow.
 
-The scraper is deployed via **GitHub Actions** with 8 scheduled runs per day - LinkedIn and Indeed alternate every 3 hours with each role set scraped twice. No server required.
+The scraper is deployed via **GitHub Actions** every hour (`0 * * * *`). Each hour scrapes one board and one role set, then stops after 22 minutes and syncs. If that pass fetches nothing, the same hour starts the scraper again. A run no longer sits for 6–8 hours and cancels the ones waiting behind it.
 
-| Time (PKT) | Board    | Role Set |
-| :--------- | :------- | :------- |
-| 1:00 AM    | LinkedIn | Set 1    |
-| 4:00 AM    | Indeed   | Set 1    |
-| 7:00 AM    | LinkedIn | Set 2    |
-| 10:00 AM   | Indeed   | Set 2    |
-| 1:00 PM    | LinkedIn | Set 1    |
-| 4:00 PM    | Indeed   | Set 1    |
-| 8:00 PM    | LinkedIn | Set 2    |
-| 10:00 PM   | Indeed   | Set 2    |
+The UTC hour picks the slot (`hour % 4`):
+
+| Slot | Board    | Role set |
+| :--- | :------- | :------- |
+| 0    | LinkedIn | Set 1    |
+| 1    | Indeed   | Set 1    |
+| 2    | LinkedIn | Set 2    |
+| 3    | Indeed   | Set 2    |
+
+Each pair runs 6 times a day. A manual run still uses the board and role-set dropdowns and is not capped at 22 minutes.
 
 ### Setup
 
@@ -251,7 +251,7 @@ The workflow file is at `.github/workflows/scrape.yml`. A preflight step runs `j
 
 ## Roles Covered
 
-60 roles across two sets, each scraped twice daily on both LinkedIn and Indeed.
+60 roles across two sets. Each set is scraped on LinkedIn and Indeed every 4 hours.
 
 **Set 1:**
 
