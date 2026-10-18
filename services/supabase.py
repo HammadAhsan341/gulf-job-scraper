@@ -234,7 +234,8 @@ class SupabaseService:
                 self.client.table("jobs")
                 .select(
                     "job_id,job_description,company,location,url,job_title,"
-                    "job_type,salary_raw,posted_date,skills_required"
+                    "job_type,salary_raw,posted_date,skills_required,"
+                    "market,country_code,country,city,state_or_emirate,source_host"
                 )
                 .in_("job_id", chunk)
                 .execute()
@@ -304,23 +305,41 @@ class SupabaseService:
             print(f"Failed to mark job as processed: {e}")
             return False
 
-    def delete_stale_jobs(self, days: int = 7) -> int:
+    def delete_stale_jobs(
+        self,
+        days: int = 7,
+        market: Optional[str] = None,
+        country_code: Optional[str] = None,
+    ) -> int:
         """Delete jobs first scraped before the cutoff and not seen since.
 
         A job re-seen unchanged only refreshes processed_jobs.processed_at
         (see touch_jobs), so date_scrapped alone would delete postings that
         are still live.
+
+        ``market`` and ``country_code`` limit the delete to that slice. A Gulf
+        run passes market="gulf" so Pakistan rows are left in place. The
+        unscoped processed_jobs sweep runs only when no slice is set.
         """
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        market_value = (market or "").strip().lower()
+        country_value = (country_code or "").strip().upper()
         try:
             # Page the candidates: an unpaged select is capped by PostgREST max-rows.
             candidates: List[str] = []
             offset = 0
             while True:
-                page = (
+                query = (
                     self.client.table("jobs")
                     .select("job_id")
                     .lt("date_scrapped", cutoff)
+                )
+                if market_value:
+                    query = query.eq("market", market_value)
+                if country_value:
+                    query = query.eq("country_code", country_value)
+                page = (
+                    query
                     .order("job_id")
                     .range(offset, offset + 999)
                     .execute()
@@ -348,9 +367,13 @@ class SupabaseService:
                 chunk = stale_ids[i:i + 100]
                 self.client.table("jobs").delete().in_("job_id", chunk).execute()
                 self.client.table("processed_jobs").delete().in_("job_id", chunk).execute()
-            self.client.table("processed_jobs").delete().lt("processed_at", cutoff).execute()
+            if not market_value and not country_value:
+                self.client.table("processed_jobs").delete().lt("processed_at", cutoff).execute()
 
-            print(f"Deleted {len(stale_ids)} stale jobs not seen in {days} days")
+            scope = market_value or "all markets"
+            if country_value:
+                scope = f"{scope}/{country_value}"
+            print(f"Deleted {len(stale_ids)} stale jobs not seen in {days} days ({scope})")
             return len(stale_ids)
         except (APIError, httpx.HTTPError) as e:
             print(f"Failed to delete stale jobs: {e}")

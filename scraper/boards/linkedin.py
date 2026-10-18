@@ -36,6 +36,11 @@ class LinkedInParser(BaseJobParser):
 
     def __init__(self):
         self._listing_jobs: List[JobData] = []
+        self._default_location = "Pakistan"
+
+    def set_market(self, ctx) -> None:
+        label = getattr(ctx, "location_label", "") if ctx is not None else ""
+        self._default_location = label or "Pakistan"
 
     def validate_job_data(self, data: dict) -> bool:
         for field in ["title", "company", "location", "job_url"]:
@@ -97,7 +102,7 @@ class LinkedInParser(BaseJobParser):
                 ".jobs-unified-top-card__bullet"
             ])
             
-            location_text = self.clean_text(self._get_text(location)) if location else "Pakistan"
+            location_text = self.clean_text(self._get_text(location)) if location else self._default_location
             
             html = self._get_html(response)
             description_text, _src = extract_description_multi(html, response)
@@ -192,7 +197,7 @@ class LinkedInParser(BaseJobParser):
             (job or {}).get("location")
             or listing.get("location")
             or self.clean_text(ld.get("location") or "")
-            or "Pakistan"
+            or self._default_location
         )
         description_text = self.clean_text(
             multi
@@ -241,12 +246,19 @@ class LinkedInParser(BaseJobParser):
     
     @staticmethod
     def guest_job_url(href: str) -> str:
+        """Public job URL on www. Country hosts such as ae.linkedin.com bounce guests home."""
         if not href or "/jobs/view/" not in href:
             return ""
-        base = href.split("?")[0]
-        if not base.startswith("http"):
-            base = f"https://www.linkedin.com{base}"
-        return base
+        from urllib.parse import urlparse
+
+        raw = href.split("?")[0]
+        if raw.startswith("http"):
+            path = urlparse(raw).path or ""
+        else:
+            path = raw if raw.startswith("/") else f"/{raw}"
+        if "/jobs/view/" not in path:
+            return ""
+        return f"https://www.linkedin.com{path}"
 
     def _parse_card(self, card: Any) -> Optional[JobData]:
         title_el = self._css_first(card, [
@@ -278,7 +290,7 @@ class LinkedInParser(BaseJobParser):
             "span.job-search-card__location",
             ".job-search-card__location",
         ])
-        location_text = self.clean_text(self._get_text(location)) if location else "Pakistan"
+        location_text = self.clean_text(self._get_text(location)) if location else self._default_location
 
         posted = self._css_first(card, [
             "time.job-search-card__listdate",
@@ -348,10 +360,10 @@ class LinkedInParser(BaseJobParser):
                         continue
                     title_text = self.clean_text(self._get_text(link)) or "Untitled"
                     job = {
-                        "job_id": self.generate_job_id(title_text, "Unknown", "Pakistan"),
+                        "job_id": self.generate_job_id(title_text, "Unknown", self._default_location),
                         "title": title_text,
                         "company": "Unknown",
-                        "location": "Pakistan",
+                        "location": self._default_location,
                         "job_url": job_url,
                         "board": self.board_name,
                         "description": "",

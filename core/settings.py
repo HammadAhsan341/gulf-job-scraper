@@ -30,6 +30,9 @@ class Settings:
     excel_skill_gap: str
     job_stale_after_days: int
     job_scraping_boards: List[str]
+    job_scraping_market: str
+    job_scraping_countries: List[str]
+    job_scraping_include_cities: bool
     job_scraping_workers: int
     job_scraping_max_concurrent_fetches: int
     job_scraping_retry_backoff_seconds: float
@@ -96,11 +99,41 @@ def _get_env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Rozee and Mustakbil only cover Pakistan. The Gulf scraper does not call them.
+DISABLED_BOARDS = frozenset({"rozee", "mustakbil"})
+DEFAULT_BOARDS = ["bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"]
+
+
 def _parse_boards(raw: str | None) -> List[str]:
-    # Local boards first so a LinkedIn/Indeed hang cannot delay the first writes.
+    # Gulf boards first so a LinkedIn/Indeed hang cannot delay the first writes.
     if not raw or raw.strip().lower() == "all":
-        return ["rozee", "mustakbil", "indeed", "linkedin"]
-    return [b.strip().lower() for b in raw.split(",") if b.strip()]
+        return list(DEFAULT_BOARDS)
+    boards = []
+    for name in raw.split(","):
+        board = name.strip().lower()
+        if not board or board in DISABLED_BOARDS:
+            continue
+        boards.append(board)
+    return boards
+
+
+def _parse_countries(raw: str | None) -> List[str]:
+    from core.markets import GCC_COUNTRY_CODES, market_by_code, resolve_location
+
+    if not raw or raw.strip().lower() in {"all", "gcc", "gulf"}:
+        return list(GCC_COUNTRY_CODES)
+    codes: List[str] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        market = market_by_code(token)
+        if market is None:
+            resolved = resolve_location(token)
+            market = market_by_code(resolved.country_code) if resolved and resolved.country_code else None
+        if market is not None and market.code not in codes:
+            codes.append(market.code)
+    return codes or list(GCC_COUNTRY_CODES)
 
 
 def _build_settings() -> Settings:
@@ -132,6 +165,9 @@ def _build_settings() -> Settings:
         excel_skill_gap=os.getenv("EXCEL_SKILL_GAP", "data/skills_master.xlsx"),
         job_stale_after_days=_get_env_int("JOB_STALE_AFTER_DAYS", 7),
         job_scraping_boards=_parse_boards(os.getenv("JOB_SCRAPING_BOARDS")),
+        job_scraping_market=(os.getenv("JOB_SCRAPING_MARKET") or "gulf").strip().lower() or "gulf",
+        job_scraping_countries=_parse_countries(os.getenv("JOB_SCRAPING_COUNTRIES")),
+        job_scraping_include_cities=_get_env_bool("JOB_SCRAPING_INCLUDE_CITIES", True),
         job_scraping_workers=_get_env_int("JOB_SCRAPING_WORKERS", 4),
         job_scraping_max_concurrent_fetches=_get_env_int(
             "JOB_SCRAPING_MAX_CONCURRENT_FETCHES",

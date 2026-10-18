@@ -322,30 +322,30 @@ class JobEnricher:
             "raw_text": raw_text
         }
     
-    def normalize_salary(self, salary: Optional[str], location: str) -> Optional[Dict[str, Any]]:
+    def normalize_salary(
+        self,
+        salary: Optional[str],
+        location: str,
+        country_code: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """
         Normalize salary to structured format.
         
         Args:
             salary: Raw salary string
             location: Job location (for currency detection)
+            country_code: GCC code when the posting already names a market
             
         Returns:
             Normalized salary data or None
         """
         if not salary or salary.lower() in ["competitive", "negotiable", "not specified"]:
             return None
-        
-        # Detect currency
-        currency = "PKR"  # Default for Pakistan
-        if "$" in salary or "usd" in salary.lower():
-            currency = "USD"
-        elif "£" in salary or "gbp" in salary.lower():
-            currency = "GBP"
-        elif "€" in salary or "eur" in salary.lower():
-            currency = "EUR"
-        elif "rs" in salary.lower() or "pkr" in salary.lower():
-            currency = "PKR"
+
+        from core.markets import currency_in_text, default_currency
+
+        # Explicit token wins (AED, SAR, $, Rs, ...). Otherwise use the place.
+        currency = currency_in_text(salary) or default_currency(location, country_code)
         
         # Extract numbers
         # Handle formats: "80,000 - 120,000", "80k - 120k", "$1500-2000"
@@ -378,7 +378,7 @@ class JobEnricher:
         # Detect period
         period = "month"  # Default
         salary_lower = salary.lower()
-        if any(keyword in salary_lower for keyword in ["annual", "yearly", "per year", "/year", "p.a."]):
+        if any(keyword in salary_lower for keyword in ["annual", "yearly", "per year", "/year", "p.a.", "per annum", "/annum"]):
             period = "year"
         elif any(keyword in salary_lower for keyword in ["monthly", "per month", "/month"]):
             period = "month"
@@ -512,7 +512,8 @@ class JobEnricher:
             # Normalize salary
             salary_result = self.normalize_salary(
                 job.get("salary"),
-                job.get("location", "")
+                job.get("location", ""),
+                country_code=str(job.get("country_code") or ""),
             )
             enriched["salary_normalized"] = salary_result
             

@@ -2,14 +2,14 @@
 
 # Job Board Scraper
 
-**Multi-board job scraper for Pakistan**
+**Multi-board job scraper for the GCC**
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Scrapling](https://img.shields.io/badge/Scrapling-0.4.7-FF6B35)](https://github.com/D4Vinci/Scrapling)
 [![Supabase](https://img.shields.io/badge/Supabase-2.30-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
 [![uv](https://img.shields.io/badge/uv-package%20manager-7C3AED)](https://github.com/astral-sh/uv)
 
-Scrape LinkedIn, Indeed, Rozee and Mustakbil for job listings in Pakistan (the scheduled CI runs cover LinkedIn and Indeed). Cleans and enriches each posting, deduplicates in Supabase, and upserts the full enriched record.
+Scrape Bayt, GulfTalent, Naukrigulf, LinkedIn, and Indeed for job listings in the UAE, Saudi Arabia, Qatar, Oman, Kuwait, and Bahrain. Cleans and enriches each posting, deduplicates in Supabase, and upserts the full enriched record. Rozee and Mustakbil are not used.
 
 </div>
 
@@ -57,8 +57,8 @@ A separate `digital_scout_node` in `pipeline/scout.py` handles interactive, quer
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │  Spider  (scraper/spider.py)                            │
-│  StealthyFetcher with Cloudflare bypass                 │
-│  Parsers: LinkedIn, Indeed, Rozee, Mustakbil            │
+│  Browser-compatible public-page fetching                │
+│  Parsers: Bayt, GulfTalent, Naukrigulf, LinkedIn, Indeed │
 │  Each with adaptive CSS selectors                       │
 └──────────────────────────┬──────────────────────────────┘
                            │
@@ -92,7 +92,7 @@ A separate `digital_scout_node` in `pipeline/scout.py` handles interactive, quer
 
 ## What Supabase stores
 
-Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_full_job_payload.sql) once before the next scrape. The upsert writes the **full enriched job**, not the old 13-column subset.
+Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_full_job_payload.sql), then [`supabase/migrations/002_gulf_market.sql`](supabase/migrations/002_gulf_market.sql), before the first Gulf scrape. The upsert writes the full enriched job and its normalized market/location fields.
 
 ### `jobs` columns written on every upsert
 
@@ -120,6 +120,12 @@ Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_f
 | `enrichment_confidence` | 0–1 score                           |                                                     |
 | `enrichment_timestamp`  | UTC timestamp                       |                                                     |
 | `raw_payload`           | jsonb snapshot                      | Full in-memory object except `raw_html`             |
+| `market`                | fixed `gulf`                        | Keeps Gulf and Pakistan cleanup/filtering isolated  |
+| `country_code`          | normalized location                 | AE, SA, QA, OM, KW, or BH                           |
+| `country`               | normalized location                 | Canonical country name                              |
+| `city`                  | normalized location                 | Canonical city where available                      |
+| `state_or_emirate`      | normalized location                 | Emirate, province, or governorate                   |
+| `source_host`           | job URL                             | Host used in stable source identity                 |
 
 ### Intentionally not stored
 
@@ -136,21 +142,21 @@ Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_f
 
 ## Features
 
-| Feature                    | Description                                                                                |
-| :------------------------- | :----------------------------------------------------------------------------------------- |
-| **Multi-board scraping**   | LinkedIn, Indeed, Rozee, Mustakbil; CI alternates LinkedIn and Indeed across two role sets |
-| **Anti-bot bypass**        | Scrapling `StealthyFetcher` with Cloudflare solver and headless/headful fallback           |
-| **Role allowlist**         | Only scrapes roles listed in `PERMITTED_ROLES` - rejects everything else                   |
-| **Supabase deduplication** | SHA-256 job IDs tracked in `processed_jobs`; stale IDs are cleared so listings can return  |
-| **Description cleaning**   | HTML entity decoding, whitespace normalisation, section splitting, sentence deduplication  |
-| **Skill extraction**       | Word-boundary regex matching against a configurable master Excel skill list                |
-| **Experience parsing**     | Detects level (entry/junior/mid/senior/lead) and min/max year ranges                       |
-| **Salary normalisation**   | Parses currency, amount range and period from free-text salary strings                     |
-| **Parallel workers**       | Role thread pool (default 4) with a per-board fetch cap (default 3)                        |
-| **Failed role retry**      | Failed roles wait for a cooldown, then retry once sequentially                             |
-| **Batched upsert**         | Supabase upsert in configurable batches with conflict resolution on `job_id`               |
-| **Enrichment confidence**  | Scores each job 0–1 based on how much structured data was extracted                        |
-| **Stale job cleanup**      | Deletes jobs older than a configurable number of days at the start of each run             |
+| Feature                    | Description                                                                               |
+| :------------------------- | :---------------------------------------------------------------------------------------- |
+| **Multi-board scraping**   | Bayt, GulfTalent, Naukrigulf, LinkedIn, Indeed across the six GCC countries               |
+| **Public-page fetching**   | Browser-backed fetching with auth-wall and human-check detection; no CAPTCHA bypass       |
+| **Role allowlist**         | Only scrapes roles listed in `PERMITTED_ROLES` - rejects everything else                  |
+| **Supabase deduplication** | SHA-256 job IDs tracked in `processed_jobs`; stale IDs are cleared so listings can return |
+| **Description cleaning**   | HTML entity decoding, whitespace normalisation, section splitting, sentence deduplication |
+| **Skill extraction**       | Word-boundary regex matching against a configurable master Excel skill list               |
+| **Experience parsing**     | Detects level (entry/junior/mid/senior/lead) and min/max year ranges                      |
+| **Salary normalisation**   | Parses currency, amount range and period from free-text salary strings                    |
+| **Parallel workers**       | Role thread pool (default 4) with a per-board fetch cap (default 3)                       |
+| **Failed role retry**      | Failed roles wait for a cooldown, then retry once sequentially                            |
+| **Batched upsert**         | Supabase upsert in configurable batches with conflict resolution on `job_id`              |
+| **Enrichment confidence**  | Scores each job 0–1 based on how much structured data was extracted                       |
+| **Stale job cleanup**      | Deletes jobs older than a configurable number of days at the start of each run            |
 
 ---
 
@@ -171,7 +177,7 @@ Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_f
 ## Prerequisites
 
 - Python 3.12+
-- Supabase project with service role key (run `supabase/migrations/001_full_job_payload.sql`)
+- Supabase project with service role key (run migrations `001`, then `002`)
 - Scrapling fetcher extras (installs Playwright/Camoufox automatically via `scrapling[fetchers]`)
 - Master skill list Excel file (default: `data/skills_master.xlsx`)
 
@@ -181,7 +187,7 @@ Apply [`supabase/migrations/001_full_job_payload.sql`](supabase/migrations/001_f
 
 ```bash
 git clone <repo-url>
-cd Scrapling-Job-Board-Scrapper
+cd gulf-job-scraper
 
 # Install dependencies
 uv sync
@@ -203,20 +209,11 @@ uv run python main.py
 
 ## Deployment
 
-**Canonical CI repo (public):** [github.com/HammadAhsan341/job-scraper](https://github.com/HammadAhsan341/job-scraper) — scheduled scrapes and manual runs use this repository’s Actions workflow.
+The scraper is deployed via **one GitHub Actions workflow** every hour (`0 * * * *`). Every scheduled run scrapes all five platforms for one country and one role set. The epoch hour rotates through a 12-slot cycle:
 
-The scraper is deployed via **GitHub Actions** every hour (`0 * * * *`). Each hour scrapes one board and one role set, then stops after 22 minutes and syncs. If that pass fetches nothing, the same hour starts the scraper again. A run no longer sits for 6–8 hours and cancels the ones waiting behind it.
+`6 countries × 2 role sets`
 
-The UTC hour picks the slot (`hour % 4`):
-
-| Slot | Board    | Role set |
-| :--- | :------- | :------- |
-| 0    | LinkedIn | Set 1    |
-| 1    | Indeed   | Set 1    |
-| 2    | LinkedIn | Set 2    |
-| 3    | Indeed   | Set 2    |
-
-Each pair runs 6 times a day. A manual run still uses the board and role-set dropdowns and is not capped at 22 minutes.
+Bayt, GulfTalent, Naukrigulf, Indeed, and LinkedIn all run in that hour. Every country receives both role sets once per 12 hours. Each run saves every job on the fetched pages, then refreshes the shared jobs cache. Manual runs can select one country or all countries, one source or all sources, and either role set or both.
 
 ### Setup
 
@@ -237,21 +234,21 @@ Each pair runs 6 times a day. A manual run still uses the board and role-set dro
 | `JOB_SCRAPING_DOWNLOAD_DELAY`         | Delay in seconds between requests             |
 | `JOB_STALE_AFTER_DAYS`                | Days after which scraped jobs are deleted     |
 
-All of the secrets above are **required** except `JOB_SCRAPING_WORKERS` and `JOB_SCRAPING_MAX_CONCURRENT_FETCHES` (the workflow defaults those to `2` and `1` on GitHub).
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and both role sets are required. Scraping limit secrets are optional and fall back to application defaults. The workflow fixes workers at `2` and concurrent fetches per board at `1`.
 
-**Full job descriptions (LinkedIn + Indeed):** Indeed uses SERP + viewjob and keeps the longest JD. LinkedIn job tabs run in an isolated browser worker, **click “See more”** via `page_action`, then parse markup / embedded JSON / JSON-LD (`linkedin_jd.py`). Headful retry runs when JD &lt; 400 chars or looks truncated. Keep `JOB_SCRAPING_FETCH_TIMEOUT_SECONDS=0` and `JOB_SCRAPING_INDEED_INTERACTIVE=false` in Actions.
+**Full job descriptions:** Gulf-native boards use public detail HTML and JobPosting JSON-LD. Indeed uses SERP + viewjob and keeps the longest public JD. LinkedIn expands public guest descriptions when available. Authentication walls and human checks are recorded as unavailable; CI never enables interactive CAPTCHA handling.
 
-If a workflow run fails in a few seconds with **no log steps**, check **Settings → Billing → Actions** (private repos need available minutes) and that no other `Daily Job Scrape` run is stuck queued.
+If a workflow run fails in a few seconds with **no log steps**, check **Settings → Billing → Actions** (private repos need available minutes) and that no other `Gulf Job Scrape` run is stuck queued.
 
-3. Go to **Actions → Daily Job Scrape → Run workflow** to trigger a manual run - use the dropdowns to select a specific board and role set, or leave as "all" for both
+3. Go to **Actions → Gulf Job Scrape → Run workflow** to trigger a manual run. Select a country, board, and role set, or use `all`.
 
-The workflow file is at `.github/workflows/scrape.yml`. A preflight step runs `job-scraper/scripts/validate_ci_env.py` before scraping.
+The workflow file is at `.github/workflows/scrape.yml`. A preflight step runs `scripts/validate_ci_env.py` before scraping.
 
 ---
 
 ## Roles Covered
 
-60 roles across two sets. Each set is scraped on LinkedIn and Indeed every 4 hours.
+Roles are split across two configurable secret-backed sets. Across the 12-hour schedule, every country receives both sets on all five platforms.
 
 **Set 1:**
 
@@ -273,7 +270,9 @@ data/
   skills_master.xlsx       <- role-to-skills grid used by the enricher
 supabase/migrations/
   001_full_job_payload.sql <- jobs columns + processed_jobs table
+  002_gulf_market.sql      <- market and normalized location columns
 core/
+  markets.py               <- GCC countries, cities, currencies, and aliases
   settings.py              <- env-backed settings singleton
   state.py                 <- AgentState and JobData TypedDicts
   role_filters.py          <- role allowlist enforcement helpers
@@ -281,6 +280,10 @@ scraper/
   spider.py                <- multi-board scrape coordinator (JobScraperSpider)
   boards/
     base.py                <- BaseJobParser ABC with shared utilities
+    public.py              <- shared public HTML + JobPosting JSON-LD parser
+    bayt.py                <- Bayt parser
+    gulftalent.py          <- GulfTalent parser
+    naukrigulf.py          <- Naukrigulf parser
     linkedin.py            <- LinkedIn parser
     linkedin_jd.py         <- LinkedIn full JD (markup + JSON-LD)
     indeed.py              <- Indeed parser
@@ -295,6 +298,7 @@ services/
   redis.py                 <- optional leftover for unused agent vetting flows
   supabase.py              <- jobs CRUD, processed_jobs dedup, full-payload upsert
 tests/
+  test_gulf_markets.py     <- GCC config, adapters, identity, schedule, currency
   test_scout.py            <- query-intent validation tests for digital_scout_node
 ```
 
@@ -302,9 +306,7 @@ tests/
 
 ## Frontend
 
-The dashboard for browsing scraped jobs lives in a separate repo:
-
-**[Scrapling Job Boards Scrapper Frontend](https://github.com/muhammadhaider02/Scrapling-Job-Boards-Scrapper-Frontend)** A Next.js app with live stats, filters and paginated job listings powered by Supabase.
+The shared FlowResume application in `../resume-builder` reads these rows through its jobs API and Redis snapshot. Its jobs browse screen defaults to Pakistan and provides a Gulf market selector with country, city, source, and currency filters.
 
 ---
 

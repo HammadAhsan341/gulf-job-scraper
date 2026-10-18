@@ -23,6 +23,12 @@ class JobData(TypedDict, total=False):
     raw_html: str
     date_scrapped: Optional[str]
     job_source: Optional[str]
+    market: Optional[str]
+    country_code: Optional[str]
+    country: Optional[str]
+    city: Optional[str]
+    state_or_emirate: Optional[str]
+    source_host: Optional[str]
 
 
 class AgentState(TypedDict, total=False):

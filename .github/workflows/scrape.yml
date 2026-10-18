@@ -1,27 +1,38 @@
-name: Daily Job Scrape
+name: Gulf Job Scrape
 
 on:
   schedule:
-    # Every hour. A 6–8h run used to overlap the next slots; GitHub then
-    # cancelled the queued runs, so nothing synced for 12h+. Each hour is
-    # one board + one role set (see "Resolve board and role set"). If that
-    # pass fetches nothing, the scrape step starts the scraper again.
+    # Every hour scrapes all five platforms for one country and one role set.
+    # The epoch-hour slot covers all 6 countries × 2 role sets every 12 hours.
     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       boards:
         description: "Boards to scrape"
         required: false
-        default: "indeed"
+        default: "bayt,gulftalent,naukrigulf,indeed,linkedin"
         type: choice
         options:
-          - linkedin,indeed
-          - indeed,linkedin
-          - linkedin
+          - bayt,gulftalent,naukrigulf,indeed,linkedin
+          - bayt
+          - gulftalent
+          - naukrigulf
           - indeed
+          - linkedin
           - all
-          - rozee
-          - mustakbil
+      country:
+        description: "GCC country code, or all six"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - AE
+          - SA
+          - QA
+          - OM
+          - KW
+          - BH
       role_set:
         description: "Which role set to use"
         required: false
@@ -33,7 +44,7 @@ on:
           - "2"
 
 concurrency:
-  group: daily-job-scrape
+  group: gulf-job-scrape
   cancel-in-progress: false
 
 permissions:
@@ -54,7 +65,8 @@ jobs:
       JOBS_CACHE_REFRESH_URL: ${{ secrets.JOBS_CACHE_REFRESH_URL }}
       JOBS_CRON_SECRET: ${{ secrets.JOBS_CRON_SECRET }}
       JOB_SCRAPING_MAX_PAGES_PER_BOARD: ${{ secrets.JOB_SCRAPING_MAX_PAGES_PER_BOARD }}
-      JOB_SCRAPING_MAX_JOBS_PER_BOARD: ${{ secrets.JOB_SCRAPING_MAX_JOBS_PER_BOARD }}
+      # 0 saves every job on the fetched listing pages.
+      JOB_SCRAPING_MAX_JOBS_PER_BOARD: "0"
       JOB_SCRAPING_DOWNLOAD_DELAY: ${{ secrets.JOB_SCRAPING_DOWNLOAD_DELAY }}
       JOB_STALE_AFTER_DAYS: ${{ secrets.JOB_STALE_AFTER_DAYS }}
       JOB_SCRAPING_WORKERS: "2"
@@ -78,6 +90,8 @@ jobs:
       # Scheduled passes stop themselves after 22 minutes and sync. Two passes
       # fit in the hour, so an empty hour can start again before the next cron.
       JOB_SCRAPING_RUN_BUDGET_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '0' || '1320' }}
+      JOB_SCRAPING_MARKET: gulf
+      JOB_SCRAPING_INCLUDE_CITIES: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -94,30 +108,21 @@ jobs:
       - name: Install Playwright browser
         run: uv run playwright install --with-deps chromium
 
-      - name: Preflight (secrets + roles)
-        run: uv run python scripts/validate_ci_env.py
-
       - name: Run unit tests
         run: uv run pytest tests/ -q --tb=line
 
-      - name: Resolve board and role set
+      - name: Resolve country, board, and role set
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "JOB_SCRAPING_BOARDS=${{ github.event.inputs.boards }}" >> "$GITHUB_ENV"
+            echo "JOB_SCRAPING_COUNTRIES=${{ github.event.inputs.country }}" >> "$GITHUB_ENV"
             ROLE_SET="${{ github.event.inputs.role_set }}"
           else
-            # UTC hour % 4 cycles LinkedIn/Indeed and both role sets every hour.
-            # 0 LinkedIn set 1, 1 Indeed set 1, 2 LinkedIn set 2, 3 Indeed set 2.
-            HOUR=$(date -u +%H)
-            SLOT=$((10#$HOUR % 4))
-            case "$SLOT" in
-              0) BOARD=linkedin; ROLE_SET=1 ;;
-              1) BOARD=indeed; ROLE_SET=1 ;;
-              2) BOARD=linkedin; ROLE_SET=2 ;;
-              3) BOARD=indeed; ROLE_SET=2 ;;
-            esac
-            echo "JOB_SCRAPING_BOARDS=$BOARD" >> "$GITHUB_ENV"
-            echo "Hourly slot UTC ${HOUR}:00 -> ${BOARD}, role set ${ROLE_SET}"
+            EPOCH_HOUR=$(($(date -u +%s) / 3600))
+            uv run python scripts/schedule_slot.py \
+              --epoch-hour "$EPOCH_HOUR" --github-env "$GITHUB_ENV"
+            ROLE_SET=$(uv run python scripts/schedule_slot.py \
+              --epoch-hour "$EPOCH_HOUR" | awk -F= '/GULF_ROLE_SET/ {print $2}')
           fi
 
           if [ "$ROLE_SET" = "1" ]; then
@@ -133,6 +138,9 @@ jobs:
           print('PERMITTED_ROLES=' + json.dumps(merged))
           " >> $GITHUB_ENV
           fi
+
+      - name: Preflight (secrets + shard)
+        run: uv run python scripts/validate_ci_env.py
 
       - name: Run scraper
         run: |

@@ -21,11 +21,19 @@ AUTH_URL_MARKERS = (
     "linkedin.com/login",
     "linkedin.com/uas/login",
     "linkedin.com/signup",
+    "bayt.com/en/login",
+    "bayt.com/en/register",
+    "gulftalent.com/login",
+    "naukrigulf.com/login",
 )
 
 AUTH_HTML_MARKERS = (
     "bot-detection-anonymous",
     "from=bot-detection",
+    "g-recaptcha",
+    "cf-challenge-running",
+    "please verify you are a human",
+    "unusual traffic",
 )
 
 JOB_URL_MARKERS = (
@@ -239,6 +247,19 @@ def description_looks_truncated(text: str) -> bool:
     if len(t) < 600 and ("see more" in lower or "show more" in lower):
         return True
     return False
+
+
+CLOUDFLARE_BLOCK_MARKERS = (
+    "sorry, you have been blocked",
+    "you are unable to access linkedin.com",
+    "attention required! | cloudflare",
+)
+
+
+def is_cloudflare_block(response: Any = None, url: str = "") -> bool:
+    """True when Cloudflare has blocked this browser. Callers stop; they do not bypass it."""
+    blob = f"{_response_url(response, url)}\n{_response_html(response)}".lower()
+    return any(marker in blob for marker in CLOUDFLARE_BLOCK_MARKERS)
 
 
 def is_auth_wall(response: Any = None, url: str = "") -> bool:

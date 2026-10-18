@@ -164,22 +164,46 @@ def _persist_scraped_jobs(raw_jobs, supabase, totals, batch_size, state):
     return affected
 
 
-REMOTE_SEARCH_LOCATION = "Remote"
-# Rozee and Mustakbil only list Pakistan jobs, so only these boards get the remote pass.
+# LinkedIn remote is worldwide. Indeed remote stays on each country's host.
 REMOTE_CAPABLE_BOARDS = ("linkedin", "indeed")
 
 
+def _configured_countries(settings):
+    from core.markets import GCC_COUNTRY_CODES
+
+    codes = list(getattr(settings, "job_scraping_countries", None) or [])
+    return codes or list(GCC_COUNTRY_CODES)
+
+
+def _active_boards(settings):
+    from core.settings import DISABLED_BOARDS
+
+    return [
+        board
+        for board in settings.job_scraping_boards
+        if (board or "").strip().lower() not in DISABLED_BOARDS
+    ]
+
+
 def _role_searches(role, settings):
-    """(board, location) pairs for one role: every board in Pakistan, plus a
-    remote-anywhere pass on LinkedIn/Indeed for roles listed in REMOTE_ROLES."""
-    searches = [(board, "Pakistan") for board in settings.job_scraping_boards]
+    """(board, location) pairs: country-wide, then each major city, then remote.
+
+    Rozee and Mustakbil are dropped. LinkedIn gets one worldwide remote pass.
+    Indeed gets a remote pass on each configured country's host.
+    """
+    from core.markets import remote_location_label, search_location_labels
+
+    boards = _active_boards(settings)
+    countries = _configured_countries(settings)
+    include_cities = bool(getattr(settings, "job_scraping_include_cities", True))
+    locations = search_location_labels(countries, include_cities=include_cities)
+    searches = [(board, location) for location in locations for board in boards]
     remote_roles = {r.strip().lower() for r in settings.remote_roles}
     if role.strip().lower() in remote_roles:
-        searches += [
-            (board, REMOTE_SEARCH_LOCATION)
-            for board in settings.job_scraping_boards
-            if board in REMOTE_CAPABLE_BOARDS
-        ]
+        if "indeed" in boards:
+            searches += [("indeed", remote_location_label(code)) for code in countries]
+        if "linkedin" in boards:
+            searches.append(("linkedin", "Remote"))
     return searches
 
 
@@ -201,7 +225,7 @@ def _process_single_role(
 ):
     """
     Process one role board-by-board so a hang on LinkedIn cannot delay
-    Rozee/Mustakbil/Indeed writes.
+    Bayt, GulfTalent, Naukrigulf, or Indeed writes.
     Returns True on success, False on failure.
     """
     print(f"\n[{index}/{total}] Role: {role}")
@@ -306,7 +330,12 @@ def run_bulk_pipeline():
     from pipeline.enricher import get_enricher
     get_enricher()
 
-    supabase.delete_stale_jobs(days=settings.job_stale_after_days)
+    countries = _configured_countries(settings)
+    supabase.delete_stale_jobs(
+        days=settings.job_stale_after_days,
+        market=getattr(settings, "job_scraping_market", None) or "gulf",
+        country_code=countries[0] if len(countries) == 1 else None,
+    )
     clearer = getattr(supabase, "clear_orphan_processed_jobs", None)
     if callable(clearer):
         clearer()

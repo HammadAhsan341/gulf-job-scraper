@@ -1,8 +1,8 @@
 """
 JobScraperSpider: Multi-session job scraper using Scrapling.
 
-Coordinates scraping across LinkedIn, Rozee, Indeed, and Mustakbil with:
-- StealthyFetcher for anti-bot bypass
+Coordinates scraping across Bayt, GulfTalent, Naukrigulf, LinkedIn, and Indeed with:
+- StealthyFetcher for browser-compatible public-page fetching
 - Checkpoint-based resume
 - Concurrent requests with rate limiting
 - Hard fetch timeouts so a blocked board cannot stall the whole run
@@ -16,14 +16,17 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from core.role_filters import posting_matches_role
 from core.settings import get_settings
 from core.state import JobData
+from core.settings import DISABLED_BOARDS
 from scraper.boards import (
     BaseJobParser,
+    BaytParser,
+    GulfTalentParser,
     IndeedParser,
     LinkedInParser,
-    MustakbilParser,
-    RozeeParser,
+    NaukrigulfParser,
 )
 from scraper.fetch_worker import worker_entry, _stealthy_fetch
 from scraper.boards.indeed_jd import jk_from_job_url
@@ -31,10 +34,20 @@ from scraper.guest import (
     description_looks_truncated,
     destination_job_url,
     is_auth_wall,
+    is_cloudflare_block,
+    is_job_detail_url,
     jsonld_job_description,
     merge_listing_with_detail,
 )
 from scraper.listing_persist import is_persistable_job, prepare_job_for_persist
+
+_linkedin_blocked = False
+
+
+def _block_linkedin() -> None:
+    global _linkedin_blocked
+    _linkedin_blocked = True
+
 
 _board_fetch_gates: Dict[str, threading.Semaphore] = {}
 _board_fetch_gates_lock = threading.Lock()
@@ -283,8 +296,13 @@ def _fetch_once(
     # Reference scraper: StealthyFetcher(network_idle=True) with no timeout.
     timeout_ms = int(timeout_s * 1000) if timeout_s > 0 else 0
     parse_job = False
+    board_key = (board or "").lower()
     if job_detail:
-        idle = True
+        # Indeed and LinkedIn guest descriptions render after the page settles.
+        # Gulf boards return usable HTML without waiting for every tracker, and
+        # forcing network idle there makes a finished page look timed out.
+        if board_key in {"indeed", "linkedin"}:
+            idle = True
         timeout_ms = 0
         parse_job = True
         detail_hard = float(
@@ -293,7 +311,6 @@ def _fetch_once(
         if detail_hard > hard_timeout_s:
             hard_timeout_s = detail_hard
 
-    board_key = (board or "").lower()
     if job_detail and board_key in {"indeed", "linkedin"}:
         isolate = True
         if hard_timeout_s <= 0:
@@ -404,7 +421,7 @@ class JobScraperSpider:
     Multi-board job scraper with Scrapling's adaptive parsing.
     
     Features:
-    - StealthyFetcher with Cloudflare bypass
+    - StealthyFetcher for public listing and detail pages
     - Session management for cookies/headers
     - Concurrent requests with configurable delays
     """
@@ -415,10 +432,11 @@ class JobScraperSpider:
         
         # Initialize parsers
         self.parsers: Dict[str, BaseJobParser] = {
-            "linkedin": LinkedInParser(),
-            "rozee": RozeeParser(),
+            "bayt": BaytParser(),
+            "gulftalent": GulfTalentParser(),
+            "naukrigulf": NaukrigulfParser(),
             "indeed": IndeedParser(),
-            "mustakbil": MustakbilParser()
+            "linkedin": LinkedInParser(),
         }
         
         # StealthyFetcher options (passed as kwargs)
@@ -427,7 +445,7 @@ class JobScraperSpider:
             "stealth": True,  # Enable stealth mode
         }
         
-        print("JobScraperSpider initialized with 4 parsers")
+        print(f"JobScraperSpider initialized with {len(self.parsers)} parsers")
     
     def scrape_board(
         self,
@@ -442,7 +460,7 @@ class JobScraperSpider:
         Scrape single job board.
         
         Args:
-            board: Board name ("linkedin", "rozee", "indeed", "mustakbil")
+            board: Board name ("bayt", "gulftalent", "naukrigulf", "indeed", "linkedin")
             query: Search query
             location: Location filter
             max_pages: Maximum pages to scrape
@@ -454,6 +472,13 @@ class JobScraperSpider:
         Returns:
             List of JobData dictionaries
         """
+        if (board or "").lower() in DISABLED_BOARDS:
+            print(f"Board {board} is disabled in the Gulf scraper")
+            return []
+        if (board or "").lower() == "linkedin" and _linkedin_blocked:
+            print("   LinkedIn is blocked for this run; other boards continue")
+            return []
+
         if board not in self.parsers:
             print(f"Unknown board: {board}")
             return []
@@ -461,6 +486,10 @@ class JobScraperSpider:
         wait_for_board_ready(board)
         
         parser = self.parsers[board]
+        if hasattr(parser, "set_market"):
+            from core.markets import resolve_location
+
+            parser.set_market(resolve_location(location))
         jobs = []
         jobs_by_url = {}
         listing_failures = 0
@@ -476,6 +505,8 @@ class JobScraperSpider:
             job_id = job.get("job_id") or ""
             desc = (job.get("description") or "").strip()
             board_name = (job.get("board") or board or "").lower()
+            if location and not job.get("search_location"):
+                job["search_location"] = location
             if not is_persistable_job(job, board_name):
                 return
             job = prepare_job_for_persist(job, board_name)
@@ -544,14 +575,21 @@ class JobScraperSpider:
             if headless_first is None:
                 # Guest LinkedIn/Indeed JD pages render more completely headful.
                 headless_first = board not in {"indeed", "linkedin"}
+            if board == "linkedin":
+                job_url = LinkedInParser.guest_job_url(job_url) or job_url
 
             def _load(url: str, headless: bool):
                 return _fetch(
                     url,
                     headless=headless,
-                    network_idle=True,
+                    network_idle=board in {"indeed", "linkedin"},
                     job_detail=True,
                 )
+
+            def _off_job(page) -> bool:
+                if board != "linkedin" or not page:
+                    return False
+                return not is_job_detail_url(getattr(page, "url", "") or "")
 
             order = (True, False) if headless_first else (False, True)
             response = None
@@ -564,13 +602,14 @@ class JobScraperSpider:
                     return response
                 dest = destination_job_url(response, job_url)
                 landed = getattr(response, "url", "") or ""
-                bounced = is_auth_wall(response, job_url) or not response
+                bounced = is_auth_wall(response, job_url) or not response or _off_job(response)
                 if dest and bounced and dest.split("?")[0] != landed.split("?")[0]:
                     print(f"      following rendered job URL: {dest}")
                     followed = _load(dest, headless)
                     if followed:
                         response = followed
-                if response and not is_auth_wall(response, job_url):
+                        bounced = is_auth_wall(response, job_url) or _off_job(response)
+                if response and not bounced:
                     break
             return response
 
@@ -640,15 +679,21 @@ class JobScraperSpider:
                 listing,
             )
             if not job:
+                fallback_location = (
+                    listing.get("location")
+                    or location
+                    or getattr(getattr(parser, "ctx", None), "location_label", "")
+                    or "Gulf"
+                )
                 job = {
                     "job_id": parser.generate_job_id(
                         listing.get("title") or "Untitled",
                         listing.get("company") or "Unknown",
-                        listing.get("location") or "Pakistan",
+                        fallback_location,
                     ),
                     "title": listing.get("title") or "Untitled",
                     "company": listing.get("company") or "Unknown",
-                    "location": listing.get("location") or "Pakistan",
+                    "location": fallback_location,
                     "job_url": job_url,
                     "board": board,
                     "description": desc,
@@ -736,7 +781,7 @@ class JobScraperSpider:
                 search_url = parser.build_search_url(query, location, page)
                 print(f"   Page {page}: {search_url}")
 
-                listing_response = _fetch_with_fallback(search_url, network_idle=True)
+                listing_response = _fetch_with_fallback(search_url)
 
                 if not listing_response:
                     listing_failures += 1
@@ -746,7 +791,23 @@ class JobScraperSpider:
                         break
                     continue
 
-                if is_auth_wall(listing_response, search_url):
+                job_urls = parser.parse_listing(listing_response) or []
+                listing_jobs = list(getattr(parser, "_listing_jobs", None) or [])
+                if board == "linkedin" and is_cloudflare_block(listing_response, search_url):
+                    _block_linkedin()
+                    print("   LinkedIn returned a Cloudflare block. Skipping LinkedIn for the rest of this run.")
+                    if not job_urls and not listing_jobs:
+                        break
+                status = getattr(listing_response, "status", None)
+                if status in {429, 503} and not job_urls and not listing_jobs:
+                    listing_failures += 1
+                    print(f"   Listing rate-limited ({status}) for {board}")
+                    if listing_failures >= 2:
+                        print(f"   Stopping {board} for this role after listing rate limits")
+                        break
+                    time.sleep(max(self.settings.job_scraping_download_delay, 30))
+                    continue
+                if is_auth_wall(listing_response, search_url) and not job_urls and not listing_jobs:
                     listing_failures += 1
                     print(f"   Listing hit auth/bot wall for {board}")
                     if listing_failures >= 2:
@@ -755,9 +816,23 @@ class JobScraperSpider:
                     continue
 
                 listing_failures = 0
-
-                job_urls = parser.parse_listing(listing_response) or []
-                listing_jobs = list(getattr(parser, "_listing_jobs", None) or [])
+                raw_count = len(job_urls) + len(listing_jobs)
+                if board == "bayt":
+                    # Bayt mixes featured jobs into a keyword page. Keep the
+                    # searched role so the job cap is not filled by unrelated cards.
+                    listing_jobs = [
+                        job for job in listing_jobs
+                        if posting_matches_role(
+                            query, job.get("title") or "", job.get("job_url") or ""
+                        )
+                    ]
+                    matched_urls = {
+                        job.get("job_url") for job in listing_jobs if job.get("job_url")
+                    }
+                    job_urls = [
+                        url for url in job_urls
+                        if url in matched_urls or posting_matches_role(query, "", url)
+                    ]
                 if hasattr(parser, "_listing_jobs"):
                     parser._listing_jobs = []
 
@@ -785,6 +860,10 @@ class JobScraperSpider:
                     job_urls = [j.get("job_url") for j in listing_jobs if j.get("job_url")]
 
                 if not job_urls and not listing_jobs:
+                    if raw_count:
+                        print(f"   No {query!r} matches on page {page}; continuing")
+                        time.sleep(self.settings.job_scraping_download_delay)
+                        continue
                     print(f"   No jobs found on page {page}")
                     break
 
@@ -865,9 +944,15 @@ class JobScraperSpider:
                                 )
                             )
                         )
+                        linkedin_left_job = (
+                            board == "linkedin"
+                            and job_response
+                            and not is_job_detail_url(getattr(job_response, "url", "") or "")
+                        )
                         if (
                             job_response
                             and not is_auth_wall(job_response, job_url)
+                            and not linkedin_left_job
                             and (
                                 (board == "linkedin" and (desc_len < 50 or linkedin_short_preview))
                                 or indeed_incomplete
@@ -945,13 +1030,17 @@ class JobScraperSpider:
                 print(f"   Page {page} error: {e}")
                 continue
         
+        if location:
+            for job in jobs:
+                if isinstance(job, dict) and not job.get("search_location"):
+                    job["search_location"] = location
         print(f"{board.upper()}: Scraped {len(jobs)} jobs\n")
         return jobs
     
     def scrape_all_boards(
         self,
         query: str,
-        location: str = "Pakistan",
+        location: str = "United Arab Emirates",
         boards: Optional[List[str]] = None,
         max_pages_per_board: int = 2,
         max_jobs_per_board: int = None,
@@ -971,7 +1060,7 @@ class JobScraperSpider:
             Combined list of jobs from all boards
         """
         if boards is None:
-            boards = ["rozee", "mustakbil", "indeed", "linkedin"]
+            boards = ["bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"]
         
         all_jobs = []
         

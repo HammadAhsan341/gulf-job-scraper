@@ -1,4 +1,6 @@
 """
+Disabled Pakistan parser. The Gulf spider does not register Mustakbil.
+
 Mustakbil.com job parser using Scrapling.
 
 Mustakbil is a Pakistan-based job portal.

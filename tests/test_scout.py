@@ -103,6 +103,8 @@ class TestScoutQueryValidation(unittest.TestCase):
             permitted_roles=["AI Engineer", "Software Engineer"],
             job_scraping_max_pages_per_board=1,
             job_scraping_max_jobs_per_board=5,
+            job_scraping_boards=["indeed", "linkedin"],
+            job_scraping_countries=["AE"],
         )
 
         with patch("pipeline.scout.get_settings", return_value=settings), patch(

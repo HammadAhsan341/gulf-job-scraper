@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.markets import GCC_COUNTRY_CODES
+from core.settings import DEFAULT_BOARDS, _parse_boards, _parse_countries
 
 
 def _require(name: str) -> str:
@@ -55,7 +60,26 @@ def main() -> None:
     if not boards:
         print("JOB_SCRAPING_BOARDS empty; default boards will apply at runtime")
     else:
-        print(f"JOB_SCRAPING_BOARDS={boards}")
+        parsed_boards = _parse_boards(boards)
+        unknown = sorted(
+            {
+                item.strip().lower()
+                for item in boards.split(",")
+                if item.strip().lower() not in {*DEFAULT_BOARDS, "all"}
+            }
+        )
+        if unknown or not parsed_boards:
+            print(f"Invalid Gulf board selection: {boards}", file=sys.stderr)
+            sys.exit(1)
+        print(f"JOB_SCRAPING_BOARDS={','.join(parsed_boards)}")
+    countries = (os.getenv("JOB_SCRAPING_COUNTRIES") or "").strip()
+    parsed_countries = _parse_countries(countries)
+    if countries and countries.lower() not in {"all", "gcc", "gulf"}:
+        supplied = {item.strip().upper() for item in countries.split(",") if item.strip()}
+        if not supplied.issubset(set(GCC_COUNTRY_CODES)):
+            print(f"Invalid GCC country selection: {countries}", file=sys.stderr)
+            sys.exit(1)
+    print(f"JOB_SCRAPING_COUNTRIES={','.join(parsed_countries)}")
     _roles_ok()
     print("Preflight passed.")
 

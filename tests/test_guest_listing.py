@@ -16,6 +16,7 @@ from scraper.guest import (
     description_looks_truncated,
     destination_job_url,
     is_auth_wall,
+    is_cloudflare_block,
     jsonld_job_description,
     merge_listing_with_detail,
     meta_refresh_url,
@@ -86,6 +87,20 @@ class TestAuthWall(unittest.TestCase):
             body="<html><h1>Software Engineer</h1></html>",
         )
         self.assertFalse(is_auth_wall(response))
+
+    def test_cloudflare_block_page_is_detected(self):
+        response = SimpleNamespace(
+            url="https://www.linkedin.com/",
+            body=(
+                "<html><h1>Sorry, you have been blocked</h1>"
+                "<p>You are unable to access linkedin.com</p></html>"
+            ),
+        )
+        self.assertTrue(is_cloudflare_block(response))
+        self.assertFalse(is_cloudflare_block(SimpleNamespace(
+            url="https://www.linkedin.com/jobs/view/1",
+            body="<html><h1>Software Engineer</h1></html>",
+        )))
 
     def test_guest_search_page_with_sign_in_nav_is_not_wall(self):
         response = SimpleNamespace(
@@ -179,6 +194,14 @@ class TestLinkedInCards(unittest.TestCase):
         urls = parser.parse_listing(response)
         self.assertEqual(urls, ["https://www.linkedin.com/jobs/view/12345"])
         self.assertEqual(parser._listing_jobs[0]["company"], "Acme")
+
+    def test_country_host_job_url_uses_www(self):
+        self.assertEqual(
+            LinkedInParser.guest_job_url(
+                "https://ae.linkedin.com/jobs/view/software-engineer-at-acme-123?trk=x"
+            ),
+            "https://www.linkedin.com/jobs/view/software-engineer-at-acme-123",
+        )
 
     def test_parse_job_prefers_full_markup_over_see_more_preview(self):
         preview = "We are hiring for a senior role with cloud experience. …see more"

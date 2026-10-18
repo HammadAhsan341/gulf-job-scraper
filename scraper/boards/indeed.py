@@ -1,10 +1,13 @@
 """
-Indeed Pakistan job parser using Scrapling.
+Indeed job parser using Scrapling.
 
-Indeed is a global job search engine with Pakistan listings.
+The host is per GCC market (ae.indeed.com, sa.indeed.com, ...). The default
+stays pk.indeed.com so a parser constructed without a market still builds
+the historical Pakistan URLs.
 """
 
 from typing import Optional, List, Any, Dict
+from urllib.parse import urlsplit
 from core.state import JobData
 from scraper.guest import jsonld_job_description, jsonld_job_posting, pick_longer_description_job
 from scraper.boards.indeed_jd import _clean_html_text, extract_description_multi, jk_from_job_url
@@ -29,14 +32,49 @@ class _HtmlResponse:
         return self._selector.css(selector)
 
 
+def _salary_text(text: str) -> bool:
+    from core.markets import currency_in_text
+
+    return bool(currency_in_text(text or ""))
+
+
+def _clean_host(host: str) -> str:
+    text = (host or "").strip()
+    if "://" in text:
+        text = urlsplit(text).hostname or ""
+    text = text.lower().strip("/")
+    return text or "pk.indeed.com"
+
+
 class IndeedParser(BaseJobParser):
-    """Indeed job board parser."""
+    """Indeed job board parser. ``host`` selects the country site."""
     
     board_name = "indeed"
     enrich_from_detail_pages = True
 
-    def __init__(self):
+    def __init__(self, host: str = "pk.indeed.com"):
         self._listing_jobs: List[JobData] = []
+        self.host = _clean_host(host)
+        self._default_location = "Pakistan"
+
+    def set_market(self, ctx) -> None:
+        """Point search and viewjob URLs at the market's Indeed host."""
+        if ctx is None:
+            self.host = "pk.indeed.com"
+            self._default_location = "Pakistan"
+            return
+        host = getattr(ctx, "indeed_host", "") or ""
+        if host:
+            self.host = _clean_host(host)
+        label = getattr(ctx, "location_label", "") or ""
+        if label:
+            self._default_location = label
+
+    def _search_location(self, location: str) -> str:
+        text = (location or self._default_location or "").strip()
+        if text.lower().startswith("remote"):
+            return "Remote"
+        return text or self._default_location
 
     def validate_job_data(self, data: dict) -> bool:
         for field in ["title", "company", "location", "job_url"]:
@@ -46,18 +84,24 @@ class IndeedParser(BaseJobParser):
         return True
 
     @staticmethod
-    def viewjob_url(href: str) -> str:
+    def viewjob_url(href: str, host: str = "pk.indeed.com") -> str:
         if not href:
             return ""
+        host = _clean_host(host)
         job_key = ""
         if "jk=" in href:
             job_key = href.split("jk=")[1].split("&")[0]
         if job_key:
-            return f"https://pk.indeed.com/viewjob?jk={job_key}"
+            explicit = ""
+            if href.startswith("http"):
+                name = (urlsplit(href).hostname or "").lower().removeprefix("www.")
+                if name.endswith("indeed.com"):
+                    explicit = name
+            return f"https://{explicit or host}/viewjob?jk={job_key}"
         if "/viewjob" in href:
             if href.startswith("http"):
                 return href.split("?")[0] + (("?" + href.split("?", 1)[1]) if "?" in href else "")
-            return f"https://pk.indeed.com{href}"
+            return f"https://{host}{href}"
         return ""
     
     def parse_job(self, response: Any) -> Optional[JobData]:
@@ -123,7 +167,7 @@ class IndeedParser(BaseJobParser):
             
             location_text = self.clean_text(self._get_text(location)) if location else ""
             if not location_text:
-                location_text = self.clean_text(ld.get("location") or "") or "Pakistan"
+                location_text = self.clean_text(ld.get("location") or "") or self._default_location
             
             # Extract description (DOM JD div, mosaic JSON, JSON-LD)
             description_text, _jd_source = extract_description_multi(html, response)
@@ -156,7 +200,7 @@ class IndeedParser(BaseJobParser):
                 ".salary-snippet"
             ])
             
-            if salary_elem and ("PKR" in self._get_text(salary_elem) or "Rs" in self._get_text(salary_elem)):
+            if salary_elem and _salary_text(self._get_text(salary_elem)):
                 salary = self.clean_text(self._get_text(salary_elem))
             
             # Extract employment type
@@ -222,8 +266,8 @@ class IndeedParser(BaseJobParser):
         if not job_key:
             return ""
         q = urllib.parse.quote(query or "")
-        loc = urllib.parse.quote(location or "Pakistan")
-        url = f"https://pk.indeed.com/jobs?q={q}&l={loc}&vjk={job_key}"
+        loc = urllib.parse.quote(self._search_location(location))
+        url = f"https://{self.host}/jobs?q={q}&l={loc}&vjk={job_key}"
         start = (page - 1) * 10
         if start > 0:
             url += f"&start={start}"
@@ -257,7 +301,7 @@ class IndeedParser(BaseJobParser):
         location_text = (
             listing.get("location")
             or self.clean_text(ld.get("location") or "")
-            or "Pakistan"
+            or self._default_location
         )
         canonical_url = job_url or listing.get("job_url") or getattr(response, "url", "")
         job_data: JobData = {
@@ -315,7 +359,7 @@ class IndeedParser(BaseJobParser):
             (job or {}).get("location")
             or listing.get("location")
             or self.clean_text(ld.get("location") or "")
-            or "Pakistan"
+            or self._default_location
         )
         description_text = self.clean_text(
             ((job or {}).get("description") or "")
@@ -397,7 +441,7 @@ class IndeedParser(BaseJobParser):
             return None
         title_text = self.clean_text(self._get_text(title_link))
         href = title_link.attrib.get("href", "") if hasattr(title_link, "attrib") else ""
-        job_url = self.viewjob_url(href)
+        job_url = self.viewjob_url(href, self.host)
         if not title_text or not job_url:
             return None
 
@@ -413,7 +457,7 @@ class IndeedParser(BaseJobParser):
             "div.companyLocation",
             ".companyLocation",
         ])
-        location_text = self.clean_text(self._get_text(location)) if location else "Pakistan"
+        location_text = self.clean_text(self._get_text(location)) if location else self._default_location
 
         snippet = self._css_first(card, [
             ".job-snippet",
@@ -480,15 +524,15 @@ class IndeedParser(BaseJobParser):
                         links.extend(found)
                 for link in links:
                     href = link.attrib.get("href", "") if hasattr(link, "attrib") else ""
-                    job_url = self.viewjob_url(href)
+                    job_url = self.viewjob_url(href, self.host)
                     if not job_url or job_url in seen:
                         continue
                     title_text = self.clean_text(self._get_text(link)) or "Untitled"
                     job = {
-                        "job_id": self.generate_job_id(title_text, "Unknown", "Pakistan"),
+                        "job_id": self.generate_job_id(title_text, "Unknown", self._default_location),
                         "title": title_text,
                         "company": "Unknown",
-                        "location": "Pakistan",
+                        "location": self._default_location,
                         "job_url": job_url,
                         "board": self.board_name,
                         "description": "",
@@ -541,13 +585,13 @@ class IndeedParser(BaseJobParser):
         """
         import urllib.parse
         query_encoded = urllib.parse.quote(query)
-        location_encoded = urllib.parse.quote(location)
+        location_encoded = urllib.parse.quote(self._search_location(location))
         
         # Indeed uses start parameter (10 jobs per page)
         start = (page - 1) * 10
         
         url = (
-            f"https://pk.indeed.com/jobs"
+            f"https://{self.host}/jobs"
             f"?q={query_encoded}"
             f"&l={location_encoded}"
         )

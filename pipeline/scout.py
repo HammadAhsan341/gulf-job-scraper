@@ -9,7 +9,7 @@ from typing import Any, Dict
 from langchain_core.messages import AIMessage
 
 from core.role_filters import extract_allowed_role_from_query
-from core.settings import get_settings
+from core.settings import DISABLED_BOARDS, get_settings
 from core.state import AgentState
 from scraper.spider import get_spider
 from services.job_record import incoming_improves_stored, merge_incoming_over_stored
@@ -109,8 +109,12 @@ def digital_scout_node(state: AgentState) -> Dict[str, Any]:
             "messages": [AIMessage(content=error_msg)],
         }
     
-    # Parse location from query (basic implementation)
-    location = "Pakistan"
+    # Parse location from query. Default is the first configured GCC country.
+    from core.markets import market_by_code
+
+    countries = list(getattr(settings, "job_scraping_countries", None) or [])
+    market = market_by_code(countries[0]) if countries else None
+    location = market.country if market else "United Arab Emirates"
     if " in " in search_query.lower():
         parts = search_query.lower().split(" in ")
         location = parts[1].strip().title()
@@ -130,7 +134,14 @@ def digital_scout_node(state: AgentState) -> Dict[str, Any]:
         raw_jobs = spider.scrape_all_boards(
             query=search_query,
             location=location,
-            boards=["linkedin", "rozee", "indeed", "mustakbil"],
+            boards=[
+                board
+                for board in (
+                    getattr(settings, "job_scraping_boards", None)
+                    or ["bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"]
+                )
+                if board not in DISABLED_BOARDS
+            ],
             max_pages_per_board=settings.job_scraping_max_pages_per_board,
             max_jobs_per_board=settings.job_scraping_max_jobs_per_board,
         )

@@ -3,24 +3,38 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scraper.boards import IndeedParser, LinkedInParser, MustakbilParser, RozeeParser
+from core.markets import resolve_location
+from scraper.boards import BaytParser, GulfTalentParser, IndeedParser, LinkedInParser, NaukrigulfParser
 from scraper.spider import _fetch_with_scrapling, reset_fetch_runtime_state
 
 
 QUERY = "Software Engineer"
-LOCATION = "Pakistan"
+LOCATION = "Dubai, United Arab Emirates"
+_MARKET = resolve_location(LOCATION)
 BOARDS = [
-    ("rozee", RozeeParser()),
-    ("mustakbil", MustakbilParser()),
+    ("bayt", BaytParser()),
+    ("gulftalent", GulfTalentParser()),
+    ("naukrigulf", NaukrigulfParser()),
     ("indeed", IndeedParser()),
     ("linkedin", LinkedInParser()),
 ]
+_ONLY = {
+    item.strip().lower()
+    for item in (os.getenv("DIAGNOSE_BOARDS") or "").split(",")
+    if item.strip()
+}
+if _ONLY:
+    BOARDS = [(name, parser) for name, parser in BOARDS if name in _ONLY]
+for _name, _parser in BOARDS:
+    if hasattr(_parser, "set_market"):
+        _parser.set_market(_MARKET)
 
 
 def _snippet(response) -> str:
@@ -49,6 +63,65 @@ def _snippet(response) -> str:
     return f"len={len(html)} flags={flags or ['none']} preview={html[:180]!r}"
 
 
+def _anchor_hints(response) -> list[str]:
+    """Show current link/class shapes when a live parser returns no cards."""
+    candidates = []
+    try:
+        for anchor in list(response.css("a[href]"))[:2000]:
+            href = str(anchor.attrib.get("href") or "")
+            classes = str(anchor.attrib.get("class") or "")
+            if "job" not in href.lower() and "job" not in classes.lower():
+                continue
+            text = " ".join((anchor.text or "").split())
+            ancestry = []
+            node = getattr(anchor, "parent", None)
+            for _ in range(4):
+                if node is None:
+                    break
+                attrs = getattr(node, "attrib", {}) or {}
+                ancestry.append(
+                    f"{getattr(node, 'tag', '?')}."
+                    f"{str(attrs.get('class') or '').replace(' ', '.')}"
+                )
+                node = getattr(node, "parent", None)
+            score = 0
+            if re.search(r"\d{5,}", href):
+                score += 4
+            if re.search(r"/(?:job|jobs)/", href, flags=re.IGNORECASE):
+                score += 2
+            if "jobs-in-" in href.lower() or href.rstrip("/").endswith("/jobs"):
+                score -= 3
+            candidates.append(
+                (
+                    score,
+                    f"href={href!r} class={classes!r} text={text[:80]!r} "
+                    f"parents={ancestry!r}",
+                )
+            )
+    except Exception as exc:
+        return [f"anchor inspection failed: {exc}"]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [hint for _score, hint in candidates[:30]]
+
+
+def _card_hint(response) -> str:
+    for selector in (
+        "div.ng-box.srp-tuple",
+        "div.job-card",
+        "article.job-card",
+        "li.job-card",
+    ):
+        try:
+            cards = response.css(selector)
+            if cards:
+                card = cards[0]
+                html = card.get() if hasattr(card, "get") else str(card)
+                return f"selector={selector!r} html={str(html)[:3000]!r}"
+        except Exception:
+            continue
+    return ""
+
+
 def main() -> int:
     reset_fetch_runtime_state()
     print(f"CI={os.getenv('CI')!r}", flush=True)
@@ -75,6 +148,12 @@ def main() -> int:
             print(f"STATUS {status} in {elapsed:.1f}s", flush=True)
             print(f"JOB_URLS {len(urls)} LISTING_JOBS {len(listing_jobs)}", flush=True)
             print(_snippet(response), flush=True)
+            if not urls and not listing_jobs:
+                card_hint = _card_hint(response)
+                if card_hint:
+                    print(f"CARD {card_hint}", flush=True)
+                for hint in _anchor_hints(response):
+                    print(f"ANCHOR {hint}", flush=True)
             results.append((board, str(status), elapsed, len(urls) or len(listing_jobs)))
         except Exception as exc:
             elapsed = time.time() - started

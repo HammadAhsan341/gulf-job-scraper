@@ -1,4 +1,4 @@
-"""Live guest scrape of all four boards for a report."""
+"""Live guest scrape of the Gulf boards for a report."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from scraper.spider import JobScraperSpider, reset_fetch_runtime_state
 
 
 QUERY = "Software Engineer"
-LOCATION = "Pakistan"
-BOARDS = ["rozee", "mustakbil", "indeed", "linkedin"]
+LOCATION = "Dubai, United Arab Emirates"
+BOARDS = ["bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"]
 
 
 def main() -> int:

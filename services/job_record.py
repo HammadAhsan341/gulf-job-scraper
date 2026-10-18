@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from services.posted_date import parse_posted_date
 
-_PAYLOAD_EXCLUDE = {"raw_html"}
+_PAYLOAD_EXCLUDE = {"raw_html", "search_location"}
 _PLACEHOLDERS = {"", "unknown", "untitled", "n/a", "none", "null"}
 
 
@@ -40,6 +40,11 @@ def incoming_improves_stored(incoming: Dict[str, Any], stored: Optional[Dict[str
         (incoming.get("employment_type"), stored.get("job_type")),
         (incoming.get("salary"), stored.get("salary_raw")),
         (incoming.get("posted_date"), stored.get("posted_date")),
+        (incoming.get("city"), stored.get("city")),
+        (incoming.get("country"), stored.get("country")),
+        (incoming.get("country_code"), stored.get("country_code")),
+        (incoming.get("state_or_emirate"), stored.get("state_or_emirate")),
+        (incoming.get("source_host"), stored.get("source_host")),
     )
     if any(not is_blank_field(new) and is_blank_field(old) for new, old in pairs):
         return True
@@ -68,6 +73,12 @@ def merge_incoming_over_stored(
         ("employment_type", "job_type"),
         ("salary", "salary_raw"),
         ("posted_date", "posted_date"),
+        ("market", "market"),
+        ("country_code", "country_code"),
+        ("country", "country"),
+        ("city", "city"),
+        ("state_or_emirate", "state_or_emirate"),
+        ("source_host", "source_host"),
     )
     for incoming_key, stored_key in field_map:
         if is_blank_field(merged.get(incoming_key)) and not is_blank_field(stored.get(stored_key)):
@@ -154,6 +165,12 @@ def job_to_record(job: Dict[str, Any]) -> Dict[str, Any]:
         "enrichment_confidence": job.get("enrichment_confidence"),
         "enrichment_timestamp": job.get("enrichment_timestamp"),
         "raw_payload": raw_payload,
+        "market": _text(job.get("market")) or None,
+        "country_code": _text(job.get("country_code")).upper() or None,
+        "country": _text(job.get("country")) or None,
+        "city": _text(job.get("city")) or None,
+        "state_or_emirate": _text(job.get("state_or_emirate")) or None,
+        "source_host": _text(job.get("source_host")) or None,
     }
     if include_posted_at and posted_at_iso:
         record["posted_at"] = posted_at_iso

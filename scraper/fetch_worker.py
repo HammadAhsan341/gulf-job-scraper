@@ -15,17 +15,29 @@ import logging
 from typing import Any
 
 
+def _indeed_search_page(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url or "")
+    host = (parts.hostname or "").lower()
+    if not host.endswith("indeed.com"):
+        return False
+    return (parts.path.rstrip("/") or "/") == "/jobs"
+
+
 def _parser_for(board: str):
+    from scraper.boards.bayt import BaytParser
+    from scraper.boards.gulftalent import GulfTalentParser
     from scraper.boards.indeed import IndeedParser
     from scraper.boards.linkedin import LinkedInParser
-    from scraper.boards.mustakbil import MustakbilParser
-    from scraper.boards.rozee import RozeeParser
+    from scraper.boards.naukrigulf import NaukrigulfParser
 
     parsers = {
+        "bayt": BaytParser,
+        "gulftalent": GulfTalentParser,
+        "naukrigulf": NaukrigulfParser,
         "indeed": IndeedParser,
         "linkedin": LinkedInParser,
-        "mustakbil": MustakbilParser,
-        "rozee": RozeeParser,
     }
     cls = parsers.get((board or "").lower())
     return cls() if cls else None
@@ -50,11 +62,11 @@ def _stealthy_fetch(
         "headless": headless,
         "network_idle": network_idle,
         "solve_cloudflare": True,
-        "google_search": (board == "mustakbil"),
+        "google_search": False,
     }
     if timeout_ms and timeout_ms > 0:
         kwargs["timeout"] = timeout_ms
-    if (board or "").lower() == "indeed" and "pk.indeed.com/jobs" in url:
+    if (board or "").lower() == "indeed" and _indeed_search_page(url):
         # Indeed search pages poll forever, so network_idle (checked twice per
         # load) always ran to the timeout: ~30-60 s per page. The pane JD
         # (?vjk=) is read from mosaic JSON in the initial HTML, so the loaded

@@ -1,4 +1,6 @@
 """
+Disabled Pakistan parser. The Gulf spider does not register Rozee.
+
 Rozee.pk job parser using Scrapling.
 
 Rozee is Pakistan's leading job portal.  Job details load in a side panel

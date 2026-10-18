@@ -39,7 +39,10 @@ def _settings(**overrides):
         job_scraping_download_delay=0.0,
         job_scraping_max_pages_per_board=1,
         job_scraping_max_jobs_per_board=5,
-        job_scraping_boards=["rozee", "indeed"],
+        job_scraping_boards=["bayt", "indeed"],
+        job_scraping_countries=["AE"],
+        job_scraping_include_cities=False,
+        job_scraping_market="gulf",
         remote_roles=[],
     )
     values.update(overrides)
@@ -50,7 +53,7 @@ class TestBoardOrder(unittest.TestCase):
     def test_all_puts_local_boards_first(self):
         self.assertEqual(
             _parse_boards("all"),
-            ["rozee", "mustakbil", "indeed", "linkedin"],
+            ["bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"],
         )
 
 
@@ -139,7 +142,7 @@ class TestPerBoardPersist(unittest.TestCase):
         supabase.bulk_insert_jobs.return_value = 1
 
         jobs_by_board = {
-            "rozee": [{"job_id": "r1", "board": "rozee", "description": "Rozee listing text from the card."}],
+            "bayt": [{"job_id": "b1", "board": "bayt", "description": "Bayt listing text from the card."}],
             "indeed": [{
                 "job_id": "i1",
                 "board": "indeed",
