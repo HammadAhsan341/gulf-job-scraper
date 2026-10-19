@@ -209,7 +209,7 @@ uv run python main.py
 
 ## Deployment
 
-The scraper is deployed via **one GitHub Actions workflow** every hour (`0 * * * *`). Every scheduled run scrapes all five platforms for one country and one role set. The epoch hour rotates through a 12-slot cycle:
+The scraper is deployed via **one GitHub Actions workflow** every hour. GitHub often drops a run scheduled at minute 0, so the workflow tries at minutes 13, 33, and 53. A later attempt skips when this UTC hour already scraped successfully. Every scheduled run scrapes all five platforms for one country and one role set. The epoch hour rotates through a 12-slot cycle:
 
 `6 countries × 2 role sets`
 
