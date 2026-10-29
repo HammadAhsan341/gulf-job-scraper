@@ -1,8 +1,7 @@
 """Resolve the Gulf scrape shard for scheduled GitHub Actions runs.
 
-Each UTC hour runs all five platforms. Role set alternates every hour (1 then 2).
-Scheduled CI runs one country per matrix job so all six GCC markets finish in
-parallel within ~30 minutes instead of a 12-hour country rotation.
+Every 30 minutes (UTC half-hour) runs all five platforms across six parallel
+country jobs. Role set alternates each half-hour (1 then 2).
 """
 
 from __future__ import annotations
@@ -12,11 +11,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from scripts.schedule_gate import HALF_HOUR_SECONDS
 
 BOARDS = ("bayt", "gulftalent", "naukrigulf", "indeed", "linkedin")
 ALL_BOARDS = ",".join(BOARDS)
 COUNTRIES = ("AE", "SA", "QA", "OM", "KW", "BH")
-# Legacy tests referenced 12 slots (6 countries × 2 role sets sequentially).
 LEGACY_SLOT_COUNT = len(COUNTRIES) * 2
 
 
@@ -28,11 +27,11 @@ class ScheduleSlot:
     role_set: int
 
 
-def resolve_slot(epoch_hour: int) -> ScheduleSlot:
-    hour = int(epoch_hour)
-    role_set = (hour % 2) + 1
+def resolve_slot(epoch_half_hour: int) -> ScheduleSlot:
+    half = int(epoch_half_hour)
+    role_set = (half % 2) + 1
     return ScheduleSlot(
-        index=hour % 2,
+        index=half % 2,
         board=ALL_BOARDS,
         country="all",
         role_set=role_set,
@@ -41,14 +40,18 @@ def resolve_slot(epoch_hour: int) -> ScheduleSlot:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epoch-hour", type=int)
+    parser.add_argument("--epoch-half-hour", type=int)
+    parser.add_argument("--epoch-hour", type=int, help="Deprecated; prefer --epoch-half-hour")
     parser.add_argument("--github-env", type=Path)
     args = parser.parse_args()
 
-    epoch_hour = args.epoch_hour
-    if epoch_hour is None:
-        epoch_hour = int(time.time() // 3600)
-    slot = resolve_slot(epoch_hour)
+    if args.epoch_half_hour is not None:
+        epoch_half = int(args.epoch_half_hour)
+    elif args.epoch_hour is not None:
+        epoch_half = int(args.epoch_hour) * 2
+    else:
+        epoch_half = int(time.time() // HALF_HOUR_SECONDS)
+    slot = resolve_slot(epoch_half)
     lines = (
         f"JOB_SCRAPING_BOARDS={slot.board}",
         f"GULF_ROLE_SET={slot.role_set}",
@@ -59,8 +62,8 @@ def main() -> None:
     else:
         print("\n".join(lines))
     print(
-        f"Gulf hour {epoch_hour}: all boards, role set {slot.role_set} "
-        f"(countries come from the workflow matrix)"
+        f"Gulf half-hour {epoch_half}: all boards, role set {slot.role_set} "
+        f"(countries run in parallel via workflow matrix)"
     )
 
 

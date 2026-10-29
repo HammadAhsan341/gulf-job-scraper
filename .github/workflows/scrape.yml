@@ -2,9 +2,10 @@ name: Gulf Job Scrape
 
 on:
   schedule:
-    # Three attempts per UTC hour; schedule_gate skips after one success.
-    # Each success runs six parallel country shards (all five boards, one role set).
-    - cron: "13,33,53 * * * *"
+    # Two waves per hour (~30 minutes apart). Each wave has a backup cron if
+    # GitHub drops the first. schedule_gate skips after one success per 30-minute
+    # UTC window. Each wave runs six parallel country jobs (all five boards).
+    - cron: "7,17,37,47 * * * *"
   workflow_dispatch:
     inputs:
       boards:
@@ -59,7 +60,7 @@ jobs:
       scrape: ${{ steps.gate.outputs.scrape }}
     steps:
       - uses: actions/checkout@v4
-      - name: Skip if this hour already scraped
+      - name: Skip if this 30-minute window already scraped
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,7 +70,7 @@ jobs:
     needs: gate
     if: github.event_name == 'schedule' && needs.gate.outputs.scrape == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 32
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -103,8 +104,8 @@ jobs:
       PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
       PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
       EXCEL_SKILL_GAP: data/skills_master.xlsx
-      # ~22 minutes of scraping per country shard; six shards run in parallel.
-      JOB_SCRAPING_RUN_BUDGET_SECONDS: "1320"
+      # ~18 minutes per country shard so the wave finishes before the next :37/:47 cron.
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: "1080"
       JOB_SCRAPING_MARKET: gulf
       JOB_SCRAPING_INCLUDE_CITIES: "true"
       JOB_SCRAPING_COUNTRIES: ${{ matrix.country }}
@@ -124,11 +125,11 @@ jobs:
         run: uv run pytest tests/ -q --tb=line
       - name: Resolve board and role set
         run: |
-          EPOCH_HOUR=$(($(date -u +%s) / 3600))
+          EPOCH_HALF=$(($(date -u +%s) / 1800))
           uv run python scripts/schedule_slot.py \
-            --epoch-hour "$EPOCH_HOUR" --github-env "$GITHUB_ENV"
+            --epoch-half-hour "$EPOCH_HALF" --github-env "$GITHUB_ENV"
           ROLE_SET=$(uv run python scripts/schedule_slot.py \
-            --epoch-hour "$EPOCH_HOUR" | awk -F= '/GULF_ROLE_SET/ {print $2}')
+            --epoch-half-hour "$EPOCH_HALF" | awk -F= '/GULF_ROLE_SET/ {print $2}')
           if [ "$ROLE_SET" = "1" ]; then
             echo "PERMITTED_ROLES=$PERMITTED_ROLES_1" >> $GITHUB_ENV
           else

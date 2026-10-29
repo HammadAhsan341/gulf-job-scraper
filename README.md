@@ -211,7 +211,7 @@ uv run python main.py
 
 The scraper is deployed via **GitHub Actions** every hour. GitHub often drops a run scheduled at minute 0, so the workflow tries at minutes 13, 33, and 53. A later attempt skips when this UTC hour already scraped successfully.
 
-Each successful hour runs **six parallel jobs** (one per GCC country: AE, SA, QA, OM, KW, BH). Every shard scrapes **all five platforms** (Bayt, GulfTalent, Naukrigulf, Indeed, LinkedIn) for ~22 minutes, so the full Gulf catalog refreshes in about **30 minutes wall-clock** instead of a 12-hour country rotation. Role set **1** and **2** alternate each UTC hour (both sets cover every country every **two hours**).
+The schedule fires **twice per hour** (about **30 minutes** apart: crons at `:07/:17` and `:37/:47` UTC). Each successful wave runs **six parallel jobs** (one per GCC country: AE, SA, QA, OM, KW, BH). Every shard scrapes **all five platforms** for ~18 minutes, so all six countries recheck in parallel within each half-hour window. Role set **1** and **2** alternate each 30-minute wave (both sets hit every country every **hour**).
 
 Each run saves every job on the fetched pages, then refreshes the shared jobs cache. Manual runs can select one country or all countries, one source or all sources, and either role set or both.
 
