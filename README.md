@@ -213,7 +213,11 @@ The scraper is deployed via **GitHub Actions** every hour. GitHub often drops a 
 
 The schedule fires **twice per hour** (about **30 minutes** apart: crons at `:07/:17` and `:37/:47` UTC). Each successful wave runs **six parallel jobs** (one per GCC country: AE, SA, QA, OM, KW, BH). Every shard scrapes **all five platforms** for ~18 minutes, so all six countries recheck in parallel within each half-hour window. Role set **1** and **2** alternate each 30-minute wave (both sets hit every country every **hour**).
 
-Each run saves every job on the fetched pages, then refreshes the shared jobs cache. Manual runs can select one country or all countries, one source or all sources, and either role set or both.
+Each run saves every job on the fetched pages, then refreshes the shared jobs cache.
+
+**Scheduled runs no longer use a single 5–6 hour job.** Each country is its own GitHub job (~18 minutes of scraping, ~25 minutes total), six run in parallel, and the workflow **exits** when they finish. The next wave is about **30 minutes** later—not hours later.
+
+Manual runs with country **all** use the same six parallel short jobs. Picking one country runs one job with the same 18-minute scrape cap.
 
 ### Setup
 

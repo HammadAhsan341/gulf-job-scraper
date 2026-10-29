@@ -154,9 +154,14 @@ jobs:
           exit "$code"
 
   scrape-manual:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.country == 'all'
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        country: [AE, SA, QA, OM, KW, BH]
     env:
       PYTHONUNBUFFERED: "1"
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -185,7 +190,92 @@ jobs:
       PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
       PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
       EXCEL_SKILL_GAP: data/skills_master.xlsx
-      JOB_SCRAPING_RUN_BUDGET_SECONDS: "0"
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: "1080"
+      JOB_SCRAPING_MARKET: gulf
+      JOB_SCRAPING_INCLUDE_CITIES: "true"
+      JOB_SCRAPING_COUNTRIES: ${{ matrix.country }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync
+      - name: Install Playwright browser
+        run: uv run playwright install --with-deps chromium
+      - name: Run unit tests
+        run: uv run pytest tests/ -q --tb=line
+      - name: Resolve board and role set
+        run: |
+          echo "JOB_SCRAPING_BOARDS=${{ github.event.inputs.boards }}" >> "$GITHUB_ENV"
+          ROLE_SET="${{ github.event.inputs.role_set }}"
+          if [ "$ROLE_SET" = "1" ]; then
+            echo "PERMITTED_ROLES=$PERMITTED_ROLES_1" >> $GITHUB_ENV
+          elif [ "$ROLE_SET" = "2" ]; then
+            echo "PERMITTED_ROLES=$PERMITTED_ROLES_2" >> $GITHUB_ENV
+          else
+            python3 -c "
+          import json, os
+          r1 = json.loads(os.environ.get('PERMITTED_ROLES_1', '[]'))
+          r2 = json.loads(os.environ.get('PERMITTED_ROLES_2', '[]'))
+          merged = list(dict.fromkeys(r1 + r2))
+          print('PERMITTED_ROLES=' + json.dumps(merged))
+          " >> $GITHUB_ENV
+          fi
+      - name: Preflight (secrets + shard)
+        run: uv run python scripts/validate_ci_env.py
+      - name: Run scraper (${{ matrix.country }})
+        run: |
+          set +e
+          uv run python -u main.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "Nothing fetched; retrying once for ${{ matrix.country }}."
+            uv run python -u main.py
+            exit $?
+          fi
+          exit "$code"
+
+  scrape-manual-one:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.country != 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      JOBS_CACHE_REFRESH_URL: ${{ secrets.JOBS_CACHE_REFRESH_URL }}
+      JOBS_CRON_SECRET: ${{ secrets.JOBS_CRON_SECRET }}
+      JOB_SCRAPING_MAX_PAGES_PER_BOARD: ${{ secrets.JOB_SCRAPING_MAX_PAGES_PER_BOARD }}
+      JOB_SCRAPING_MAX_JOBS_PER_BOARD: "0"
+      JOB_SCRAPING_DOWNLOAD_DELAY: ${{ secrets.JOB_SCRAPING_DOWNLOAD_DELAY }}
+      JOB_STALE_AFTER_DAYS: ${{ secrets.JOB_STALE_AFTER_DAYS }}
+      JOB_SCRAPING_WORKERS: "2"
+      JOB_SCRAPING_MAX_CONCURRENT_FETCHES: "1"
+      JOB_SCRAPING_RETRY_BACKOFF_SECONDS: ${{ secrets.JOB_SCRAPING_RETRY_BACKOFF_SECONDS }}
+      JOB_SCRAPING_FETCH_TIMEOUT_SECONDS: "0"
+      JOB_SCRAPING_FETCH_RETRIES: "0"
+      JOB_SCRAPING_FETCH_RETRY_DELAY_SECONDS: "8"
+      JOB_SCRAPING_NETWORK_IDLE: "true"
+      JOB_SCRAPING_DETAIL_NETWORK_IDLE: "true"
+      JOB_SCRAPING_FETCH_ISOLATE: "false"
+      JOB_SCRAPING_BROWSER_HARD_TIMEOUT_SECONDS: "120"
+      JOB_SCRAPING_DETAIL_HARD_TIMEOUT_SECONDS: "180"
+      JOB_SCRAPING_BOARD_TIMEOUT_LIMIT: "3"
+      JOB_SCRAPING_BOARD_COOLDOWN_SECONDS: "90"
+      JOB_SCRAPING_MAX_DETAIL_FETCHES: "0"
+      JOB_SCRAPING_INDEED_INTERACTIVE: "false"
+      PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
+      PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
+      EXCEL_SKILL_GAP: data/skills_master.xlsx
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: "1080"
       JOB_SCRAPING_MARKET: gulf
       JOB_SCRAPING_INCLUDE_CITIES: "true"
 
