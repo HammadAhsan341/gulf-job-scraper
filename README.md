@@ -209,11 +209,11 @@ uv run python main.py
 
 ## Deployment
 
-The scraper is deployed via **one GitHub Actions workflow** every hour. GitHub often drops a run scheduled at minute 0, so the workflow tries at minutes 13, 33, and 53. A later attempt skips when this UTC hour already scraped successfully. Every scheduled run scrapes all five platforms for one country and one role set. The epoch hour rotates through a 12-slot cycle:
+The scraper is deployed via **GitHub Actions** every hour. GitHub often drops a run scheduled at minute 0, so the workflow tries at minutes 13, 33, and 53. A later attempt skips when this UTC hour already scraped successfully.
 
-`6 countries × 2 role sets`
+Each successful hour runs **six parallel jobs** (one per GCC country: AE, SA, QA, OM, KW, BH). Every shard scrapes **all five platforms** (Bayt, GulfTalent, Naukrigulf, Indeed, LinkedIn) for ~22 minutes, so the full Gulf catalog refreshes in about **30 minutes wall-clock** instead of a 12-hour country rotation. Role set **1** and **2** alternate each UTC hour (both sets cover every country every **two hours**).
 
-Bayt, GulfTalent, Naukrigulf, Indeed, and LinkedIn all run in that hour. Every country receives both role sets once per 12 hours. Each run saves every job on the fetched pages, then refreshes the shared jobs cache. Manual runs can select one country or all countries, one source or all sources, and either role set or both.
+Each run saves every job on the fetched pages, then refreshes the shared jobs cache. Manual runs can select one country or all countries, one source or all sources, and either role set or both.
 
 ### Setup
 
@@ -248,7 +248,7 @@ The workflow file is at `.github/workflows/scrape.yml`. A preflight step runs `s
 
 ## Roles Covered
 
-Roles are split across two configurable secret-backed sets. Across the 12-hour schedule, every country receives both sets on all five platforms.
+Roles are split across two configurable secret-backed sets. Scheduled runs use one set per hour (alternating); manual runs can merge both sets.
 
 **Set 1:**
 

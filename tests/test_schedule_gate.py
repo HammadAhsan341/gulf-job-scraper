@@ -46,11 +46,12 @@ def test_retries_when_this_hour_failed():
     assert scrape is True
 
 
-def test_skips_when_another_run_is_still_going():
+def test_still_scrapes_when_another_run_is_in_progress():
+    """Concurrency cancels stale runs; do not no-op because one is still active."""
     runs = [{"id": 4, "status": "in_progress", "conclusion": None}]
     scrape, reason = should_scrape(runs, NOW, "99")
-    assert scrape is False
-    assert "in_progress" in reason
+    assert scrape is True
+    assert "no successful scrape" in reason
 
 
 def test_ignores_the_current_run():

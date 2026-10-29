@@ -3,7 +3,9 @@
 GitHub drops cron events, especially at minute 0, and does not retry them.
 The workflow registers three attempts per hour. This gate keeps the extra
 attempts from scraping again after one success in the same UTC hour. A failed
-hour is retried by the next attempt. If the check itself fails, scrape anyway.
+or cancelled hour is retried by the next attempt. Concurrency cancels an
+in-progress run when a newer one starts, so we do not skip merely because
+another run is queued or active. If the check itself fails, scrape anyway.
 """
 
 from __future__ import annotations
@@ -14,17 +16,11 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-ACTIVE = {"queued", "in_progress", "waiting", "pending", "requested"}
-
-
 def should_scrape(runs: list[dict], now: datetime, run_id: str) -> tuple[bool, str]:
     hour = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
     for run in runs:
         if str(run.get("id")) == str(run_id):
             continue
-        status = run.get("status") or ""
-        if status in ACTIVE:
-            return False, f"run {run.get('id')} is {status}"
         if run.get("conclusion") != "success":
             continue
         started = _parse(run.get("run_started_at") or run.get("created_at") or "")

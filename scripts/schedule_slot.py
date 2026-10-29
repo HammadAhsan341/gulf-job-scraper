@@ -1,7 +1,8 @@
-"""Resolve the Gulf scrape shard.
+"""Resolve the Gulf scrape shard for scheduled GitHub Actions runs.
 
-Every hour runs all five platforms. Country and role set rotate so the
-full set is covered every 12 hours.
+Each UTC hour runs all five platforms. Role set alternates every hour (1 then 2).
+Scheduled CI runs one country per matrix job so all six GCC markets finish in
+parallel within ~30 minutes instead of a 12-hour country rotation.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from pathlib import Path
 BOARDS = ("bayt", "gulftalent", "naukrigulf", "indeed", "linkedin")
 ALL_BOARDS = ",".join(BOARDS)
 COUNTRIES = ("AE", "SA", "QA", "OM", "KW", "BH")
-SLOT_COUNT = len(COUNTRIES) * 2
+# Legacy tests referenced 12 slots (6 countries × 2 role sets sequentially).
+LEGACY_SLOT_COUNT = len(COUNTRIES) * 2
 
 
 @dataclass(frozen=True)
@@ -27,12 +29,13 @@ class ScheduleSlot:
 
 
 def resolve_slot(epoch_hour: int) -> ScheduleSlot:
-    index = int(epoch_hour) % SLOT_COUNT
+    hour = int(epoch_hour)
+    role_set = (hour % 2) + 1
     return ScheduleSlot(
-        index=index,
+        index=hour % 2,
         board=ALL_BOARDS,
-        country=COUNTRIES[index % len(COUNTRIES)],
-        role_set=index // len(COUNTRIES) + 1,
+        country="all",
+        role_set=role_set,
     )
 
 
@@ -48,7 +51,6 @@ def main() -> None:
     slot = resolve_slot(epoch_hour)
     lines = (
         f"JOB_SCRAPING_BOARDS={slot.board}",
-        f"JOB_SCRAPING_COUNTRIES={slot.country}",
         f"GULF_ROLE_SET={slot.role_set}",
     )
     if args.github_env:
@@ -57,8 +59,8 @@ def main() -> None:
     else:
         print("\n".join(lines))
     print(
-        f"Gulf slot {slot.index}/{SLOT_COUNT - 1} -> "
-        f"{slot.board}, {slot.country}, role set {slot.role_set}"
+        f"Gulf hour {epoch_hour}: all boards, role set {slot.role_set} "
+        f"(countries come from the workflow matrix)"
     )
 
 

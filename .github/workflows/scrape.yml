@@ -2,11 +2,8 @@ name: Gulf Job Scrape
 
 on:
   schedule:
-    # GitHub often drops a run scheduled at minute 0 and does not retry it.
-    # Three off-peak attempts per hour; the gate skips one when this UTC
-    # hour already scraped successfully. Every attempt scrapes all five
-    # platforms for one country and one role set. The epoch-hour slot covers
-    # all 6 countries × 2 role sets every 12 hours.
+    # Three attempts per UTC hour; schedule_gate skips after one success.
+    # Each success runs six parallel country shards (all five boards, one role set).
     - cron: "13,33,53 * * * *"
   workflow_dispatch:
     inputs:
@@ -48,28 +45,43 @@ on:
 
 concurrency:
   group: gulf-job-scrape
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  scrape:
+  gate:
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    # Stay under the next hour so a run cannot sit queued and get cancelled.
-    # Manual runs can still use the full 6h when you pick a board yourself.
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 55 }}
+    outputs:
+      scrape: ${{ steps.gate.outputs.scrape }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if this hour already scraped
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/schedule_gate.py
 
+  scrape-scheduled:
+    needs: gate
+    if: github.event_name == 'schedule' && needs.gate.outputs.scrape == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        country: [AE, SA, QA, OM, KW, BH]
     env:
       PYTHONUNBUFFERED: "1"
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      # Optional: rebuild the API's Redis jobs snapshot after the run.
       JOBS_CACHE_REFRESH_URL: ${{ secrets.JOBS_CACHE_REFRESH_URL }}
       JOBS_CRON_SECRET: ${{ secrets.JOBS_CRON_SECRET }}
       JOB_SCRAPING_MAX_PAGES_PER_BOARD: ${{ secrets.JOB_SCRAPING_MAX_PAGES_PER_BOARD }}
-      # 0 saves every job on the fetched listing pages.
       JOB_SCRAPING_MAX_JOBS_PER_BOARD: "0"
       JOB_SCRAPING_DOWNLOAD_DELAY: ${{ secrets.JOB_SCRAPING_DOWNLOAD_DELAY }}
       JOB_STALE_AFTER_DAYS: ${{ secrets.JOB_STALE_AFTER_DAYS }}
@@ -82,7 +94,7 @@ jobs:
       JOB_SCRAPING_NETWORK_IDLE: "true"
       JOB_SCRAPING_DETAIL_NETWORK_IDLE: "true"
       JOB_SCRAPING_FETCH_ISOLATE: "false"
-      JOB_SCRAPING_BROWSER_HARD_TIMEOUT_SECONDS: "0"
+      JOB_SCRAPING_BROWSER_HARD_TIMEOUT_SECONDS: "120"
       JOB_SCRAPING_DETAIL_HARD_TIMEOUT_SECONDS: "180"
       JOB_SCRAPING_BOARD_TIMEOUT_LIMIT: "3"
       JOB_SCRAPING_BOARD_COOLDOWN_SECONDS: "90"
@@ -91,56 +103,109 @@ jobs:
       PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
       PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
       EXCEL_SKILL_GAP: data/skills_master.xlsx
-      # Scheduled passes stop themselves after 22 minutes and sync. Two passes
-      # fit in the hour, so an empty hour can start again before the next cron.
-      JOB_SCRAPING_RUN_BUDGET_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '0' || '1320' }}
+      # ~22 minutes of scraping per country shard; six shards run in parallel.
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: "1320"
+      JOB_SCRAPING_MARKET: gulf
+      JOB_SCRAPING_INCLUDE_CITIES: "true"
+      JOB_SCRAPING_COUNTRIES: ${{ matrix.country }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync
+      - name: Install Playwright browser
+        run: uv run playwright install --with-deps chromium
+      - name: Run unit tests
+        run: uv run pytest tests/ -q --tb=line
+      - name: Resolve board and role set
+        run: |
+          EPOCH_HOUR=$(($(date -u +%s) / 3600))
+          uv run python scripts/schedule_slot.py \
+            --epoch-hour "$EPOCH_HOUR" --github-env "$GITHUB_ENV"
+          ROLE_SET=$(uv run python scripts/schedule_slot.py \
+            --epoch-hour "$EPOCH_HOUR" | awk -F= '/GULF_ROLE_SET/ {print $2}')
+          if [ "$ROLE_SET" = "1" ]; then
+            echo "PERMITTED_ROLES=$PERMITTED_ROLES_1" >> $GITHUB_ENV
+          else
+            echo "PERMITTED_ROLES=$PERMITTED_ROLES_2" >> $GITHUB_ENV
+          fi
+      - name: Preflight (secrets + shard)
+        run: uv run python scripts/validate_ci_env.py
+      - name: Run scraper (${{ matrix.country }})
+        run: |
+          set +e
+          uv run python -u main.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "Nothing fetched; retrying once for ${{ matrix.country }}."
+            uv run python -u main.py
+            exit $?
+          fi
+          exit "$code"
+
+  scrape-manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      JOBS_CACHE_REFRESH_URL: ${{ secrets.JOBS_CACHE_REFRESH_URL }}
+      JOBS_CRON_SECRET: ${{ secrets.JOBS_CRON_SECRET }}
+      JOB_SCRAPING_MAX_PAGES_PER_BOARD: ${{ secrets.JOB_SCRAPING_MAX_PAGES_PER_BOARD }}
+      JOB_SCRAPING_MAX_JOBS_PER_BOARD: "0"
+      JOB_SCRAPING_DOWNLOAD_DELAY: ${{ secrets.JOB_SCRAPING_DOWNLOAD_DELAY }}
+      JOB_STALE_AFTER_DAYS: ${{ secrets.JOB_STALE_AFTER_DAYS }}
+      JOB_SCRAPING_WORKERS: "2"
+      JOB_SCRAPING_MAX_CONCURRENT_FETCHES: "1"
+      JOB_SCRAPING_RETRY_BACKOFF_SECONDS: ${{ secrets.JOB_SCRAPING_RETRY_BACKOFF_SECONDS }}
+      JOB_SCRAPING_FETCH_TIMEOUT_SECONDS: "0"
+      JOB_SCRAPING_FETCH_RETRIES: "0"
+      JOB_SCRAPING_FETCH_RETRY_DELAY_SECONDS: "8"
+      JOB_SCRAPING_NETWORK_IDLE: "true"
+      JOB_SCRAPING_DETAIL_NETWORK_IDLE: "true"
+      JOB_SCRAPING_FETCH_ISOLATE: "false"
+      JOB_SCRAPING_BROWSER_HARD_TIMEOUT_SECONDS: "120"
+      JOB_SCRAPING_DETAIL_HARD_TIMEOUT_SECONDS: "180"
+      JOB_SCRAPING_BOARD_TIMEOUT_LIMIT: "3"
+      JOB_SCRAPING_BOARD_COOLDOWN_SECONDS: "90"
+      JOB_SCRAPING_MAX_DETAIL_FETCHES: "0"
+      JOB_SCRAPING_INDEED_INTERACTIVE: "false"
+      PERMITTED_ROLES_1: ${{ secrets.PERMITTED_ROLES_1 }}
+      PERMITTED_ROLES_2: ${{ secrets.PERMITTED_ROLES_2 }}
+      EXCEL_SKILL_GAP: data/skills_master.xlsx
+      JOB_SCRAPING_RUN_BUDGET_SECONDS: "0"
       JOB_SCRAPING_MARKET: gulf
       JOB_SCRAPING_INCLUDE_CITIES: "true"
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Skip if this hour already scraped
-        id: gate
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/schedule_gate.py
-
       - uses: astral-sh/setup-uv@v5
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         with:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
       - name: Install dependencies
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: uv sync
-
       - name: Install Playwright browser
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: uv run playwright install --with-deps chromium
-
       - name: Run unit tests
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: uv run pytest tests/ -q --tb=line
-
       - name: Resolve country, board, and role set
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "JOB_SCRAPING_BOARDS=${{ github.event.inputs.boards }}" >> "$GITHUB_ENV"
-            echo "JOB_SCRAPING_COUNTRIES=${{ github.event.inputs.country }}" >> "$GITHUB_ENV"
-            ROLE_SET="${{ github.event.inputs.role_set }}"
-          else
-            EPOCH_HOUR=$(($(date -u +%s) / 3600))
-            uv run python scripts/schedule_slot.py \
-              --epoch-hour "$EPOCH_HOUR" --github-env "$GITHUB_ENV"
-            ROLE_SET=$(uv run python scripts/schedule_slot.py \
-              --epoch-hour "$EPOCH_HOUR" | awk -F= '/GULF_ROLE_SET/ {print $2}')
-          fi
-
+          echo "JOB_SCRAPING_BOARDS=${{ github.event.inputs.boards }}" >> "$GITHUB_ENV"
+          echo "JOB_SCRAPING_COUNTRIES=${{ github.event.inputs.country }}" >> "$GITHUB_ENV"
+          ROLE_SET="${{ github.event.inputs.role_set }}"
           if [ "$ROLE_SET" = "1" ]; then
             echo "PERMITTED_ROLES=$PERMITTED_ROLES_1" >> $GITHUB_ENV
           elif [ "$ROLE_SET" = "2" ]; then
@@ -154,13 +219,9 @@ jobs:
           print('PERMITTED_ROLES=' + json.dumps(merged))
           " >> $GITHUB_ENV
           fi
-
       - name: Preflight (secrets + shard)
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: uv run python scripts/validate_ci_env.py
-
       - name: Run scraper
-        if: github.event_name != 'schedule' || steps.gate.outputs.scrape == 'true'
         run: |
           set +e
           uv run python -u main.py
@@ -169,10 +230,8 @@ jobs:
           if [ "$code" -eq 0 ]; then
             exit 0
           fi
-          # main.py exits 2 when this pass fetched no listings. Start again
-          # now instead of waiting for the next hour (or a cancelled queue).
           if [ "$code" -eq 2 ]; then
-            echo "Nothing fetched this hour; starting the scraper again."
+            echo "Nothing fetched this run; starting the scraper again."
             uv run python -u main.py
             exit $?
           fi

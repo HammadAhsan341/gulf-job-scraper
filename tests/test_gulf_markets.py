@@ -29,7 +29,7 @@ from scraper.job_identity import stable_job_id
 from scraper.listing_persist import prepare_job_for_persist
 from services.job_record import job_to_record
 from services.supabase import SupabaseService
-from scripts.schedule_slot import BOARDS, COUNTRIES, SLOT_COUNT, resolve_slot
+from scripts.schedule_slot import BOARDS, COUNTRIES, LEGACY_SLOT_COUNT, resolve_slot
 from tests.test_audit_fixes import _enricher
 from tests.test_scrape_resilience import _settings
 
@@ -144,19 +144,20 @@ class TestMarketConfig(unittest.TestCase):
             "https://www.gulftalent.com/uae/jobs/software-engineer-643017",
         ))
 
-    def test_schedule_runs_every_platform_for_each_country_and_role_set(self):
-        slots = [resolve_slot(hour) for hour in range(SLOT_COUNT)]
-        combinations = {(slot.country, slot.role_set) for slot in slots}
-        expected = {
-            (country, role_set)
-            for country in COUNTRIES
-            for role_set in (1, 2)
-        }
-        self.assertEqual(combinations, expected)
-        self.assertEqual(SLOT_COUNT, 12)
-        for slot in slots:
-            self.assertEqual(slot.board, ",".join(BOARDS))
-        self.assertEqual(resolve_slot(SLOT_COUNT), resolve_slot(0))
+    def test_schedule_runs_all_boards_and_alternates_role_sets_hourly(self):
+        even = resolve_slot(100)
+        odd = resolve_slot(101)
+        self.assertEqual(even.board, ",".join(BOARDS))
+        self.assertEqual(odd.board, ",".join(BOARDS))
+        self.assertEqual(even.country, "all")
+        self.assertEqual(even.role_set, 1)
+        self.assertEqual(odd.role_set, 2)
+        self.assertEqual(resolve_slot(102).role_set, resolve_slot(100).role_set)
+        self.assertEqual(LEGACY_SLOT_COUNT, 12)
+
+    def test_schedule_legacy_slot_count_matches_gcc_matrix(self):
+        self.assertEqual(len(COUNTRIES), 6)
+        self.assertEqual(tuple(BOARDS), ("bayt", "gulftalent", "naukrigulf", "indeed", "linkedin"))
 
 
 class TestBoardAdapters(unittest.TestCase):
