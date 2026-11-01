@@ -11,7 +11,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.schedule_gate import HALF_HOUR_SECONDS
+try:
+    from scripts.schedule_gate import HALF_HOUR_SECONDS
+except ModuleNotFoundError:
+    # `python scripts/schedule_slot.py` puts scripts/ on sys.path, not the repo root.
+    from schedule_gate import HALF_HOUR_SECONDS
 
 BOARDS = ("bayt", "gulftalent", "naukrigulf", "indeed", "linkedin")
 ALL_BOARDS = ",".join(BOARDS)
