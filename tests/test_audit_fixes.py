@@ -318,6 +318,63 @@ class TestDetailLoopMaxJobs(unittest.TestCase):
         self.assertEqual(tried, {"0aaa", "1aaa", "2aaa"})
 
 
+class TestRunBudgetStopsScrape(unittest.TestCase):
+    """The run budget must stop a board mid-scrape, not only between boards."""
+
+    def _scrape(self, *, expired_at_start=False, expire_after_first_detail=False):
+        import time
+        from types import SimpleNamespace
+        import scraper.spider as spider_mod
+        from scraper.boards.indeed import IndeedParser
+        from scraper.spider import JobScraperSpider
+
+        spider_mod._indeed_viewjob_blocks = 0
+        parser = IndeedParser()
+        cards = [
+            {"job_id": f"id{i}", "title": f"Engineer {i}", "company": "Acme", "location": "Lahore",
+             "job_url": f"https://pk.indeed.com/viewjob?jk={i}aaaaaaaaaaaaaaa", "board": "indeed",
+             "description": "snippet", "skills": []}
+            for i in range(3)
+        ]
+        listing = SimpleNamespace(url="https://pk.indeed.com/jobs", status=200, body="<html>jobs</html>")
+        wall = SimpleNamespace(url="https://secure.indeed.com/auth?from=bot-detection-anonymous", status=200, body="login")
+        fetched = []
+
+        spider = JobScraperSpider()
+        spider.parsers["indeed"] = parser
+        spider.settings.job_scraping_download_delay = 0
+        spider.deadline = time.monotonic() + 3600
+        if expired_at_start:
+            spider.deadline = time.monotonic() - 1
+
+        def fake_fetch(url, *args, **kwargs):
+            fetched.append(url)
+            if url == "https://pk.indeed.com/jobs":
+                return listing
+            if expire_after_first_detail:
+                spider.deadline = time.monotonic() - 1
+            return wall
+
+        def fake_parse(_response):
+            parser._listing_jobs = [dict(c) for c in cards]
+            return [c["job_url"] for c in cards]
+
+        with patch("scraper.spider._fetch_with_scrapling", side_effect=fake_fetch), \
+                patch.object(parser, "parse_listing", side_effect=fake_parse), \
+                patch.object(parser, "build_search_url", return_value="https://pk.indeed.com/jobs"):
+            spider.scrape_board("indeed", "Engineer", max_pages=1, max_jobs=3)
+        spider_mod._indeed_viewjob_blocks = 0
+        return fetched
+
+    def test_expired_budget_fetches_nothing(self):
+        self.assertEqual(self._scrape(expired_at_start=True), [])
+
+    def test_budget_expiring_mid_board_stops_remaining_detail_fetches(self):
+        fetched = self._scrape(expire_after_first_detail=True)
+        self.assertTrue(any("0aaa" in u for u in fetched))
+        self.assertFalse(any("1aaa" in u or "2aaa" in u for u in fetched))
+
+
 class TestIndeedFetchOptions(unittest.TestCase):
     def _kwargs(self, url, board="indeed"):
         import scraper.fetch_worker as fw

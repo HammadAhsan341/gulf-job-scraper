@@ -446,7 +446,14 @@ class JobScraperSpider:
         }
         
         print(f"JobScraperSpider initialized with {len(self.parsers)} parsers")
-    
+
+    # time.monotonic() cutoff set by the caller (the run budget). Without it a
+    # single board scrape can run for the whole workflow timeout and get cancelled.
+    deadline: Optional[float] = None
+
+    def _out_of_time(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
     def scrape_board(
         self,
         board: str,
@@ -777,6 +784,9 @@ class JobScraperSpider:
             return best_resp or view or serp
 
         for page in range(1, max_pages + 1):
+            if self._out_of_time():
+                print(f"   Run budget reached; stopping {board} before page {page}.")
+                break
             try:
                 search_url = parser.build_search_url(query, location, page)
                 print(f"   Page {page}: {search_url}")
@@ -892,6 +902,12 @@ class JobScraperSpider:
 
                 auth_walls = 0
                 for i, job_url in enumerate(job_urls, 1):
+                    if self._out_of_time():
+                        print(
+                            f"   Run budget reached; keeping the {board} jobs "
+                            "fetched so far."
+                        )
+                        break
                     if max_details > 0 and details_used >= max_details:
                         print(
                             f"   Skipping remaining {board} detail tabs "

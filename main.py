@@ -246,6 +246,7 @@ def _process_single_role(
     searches = _role_searches(role, settings)
     try:
         spider = JobScraperSpider()
+        spider.deadline = deadline
         for board, location in searches:
             if _budget_reached(deadline):
                 print(f"   Hour budget reached; leaving {role} before {board}.")
