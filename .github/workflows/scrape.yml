@@ -55,7 +55,7 @@ permissions:
 jobs:
   gate:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       scrape: ${{ steps.gate.outputs.scrape }}
     steps:
@@ -69,7 +69,7 @@ jobs:
   scrape-scheduled:
     needs: gate
     if: github.event_name == 'schedule' && needs.gate.outputs.scrape == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 28
     strategy:
       fail-fast: false
@@ -155,7 +155,7 @@ jobs:
 
   scrape-manual:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.country == 'all'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 28
     strategy:
       fail-fast: false
@@ -245,7 +245,7 @@ jobs:
 
   scrape-manual-one:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.country != 'all'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
